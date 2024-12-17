@@ -1,0 +1,25 @@
+name: labeled
+
+on:
+  workflow_call:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Has release tag
+        uses: mheap/github-action-required-labels@v5
+        with:
+          mode: exactly
+          count: 1
+          labels: "Release"
+          add_comment: true
+
+      - name: Has version tag
+        uses: mheap/github-action-required-labels@v5
+        with:
+          mode: exactly
+          count: 1
+          labels: "Release: Major, Release: Minor, Release: Patch"
+          add_comment: true
