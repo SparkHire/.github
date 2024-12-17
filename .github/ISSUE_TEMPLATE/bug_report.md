@@ -3,7 +3,6 @@ name: Bug report
 about: Create a report to help us improve
 title: "[Issue Title] - [Company name]"
 labels: 'Type: Production Bug'
-projects: ["SparkHire/50"]
 assignees: ''
 
 ---
