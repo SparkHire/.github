@@ -9,7 +9,3 @@
 
 ### Testing Instructions
 - (List testing instructions)
-- (if applicable) Test for Accessibility issues with [WAVE Evaluation Tool](https://chrome.google.com/webstore/detail/wave-evaluation-tool/jbbplnpkjmmeebjpijfedlgcdilocofh).
-
-### URL for Testing
-(This will usually be qa or staging)
