@@ -148,7 +148,7 @@ jobs:
 
       - name: Publish package
         run: |
-          npm publish ${{ inputs.build && '' || '--ignore-scripts' }}
+          npm publish ${{ inputs.build && '' || '--ignore-scripts' }} --tag ${{ inputs.canary && 'canary' || 'latest' }}
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN_PUBLISH }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN_PUBLISH }}
