@@ -181,7 +181,7 @@ jobs:
       - name: Update PR Description
         uses: nefrob/pr-description@v1.2.0
         with:
-            content: "\n\n<!-- published package install -->\n```## Published package cmd:\n${{ steps.generate-install-cmd.outputs.install_cmd }}```\n<!-- end published package install -->"
-            regex: "\n\n<!-- start match -->.*?<!-- end match -->"
+            content: "\n\n<!-- published package install -->\n```\n# Install package cmd\n${{ steps.generate-install-cmd.outputs.install_cmd }}```\n<!-- end published package install -->"
+            regex: "\n\n<!-- published package install -->.*?<!-- end published package install -->"
             regexFlags: ims
             token: ${{ secrets.GITHUB_TOKEN }}
