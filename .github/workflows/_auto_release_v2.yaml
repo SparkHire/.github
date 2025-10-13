@@ -79,10 +79,10 @@ jobs:
         run: |
           PACKAGE_VERSION=$(npm pkg get version)
           TRIMMED_PACKAGE_VERSION=$(echo "$PACKAGE_VERSION" | sed 's/"//g')
-          echo "package_name=$TRIMMED_PACKAGE_VERSION" >> $GITHUB_OUTPUT
+          echo "package_version=$TRIMMED_PACKAGE_VERSION" >> $GITHUB_OUTPUT
 
-      - name: Fail if current-version not set
-        if: ${{ steps.package-version.outputs.current-version == '' }}
+      - name: Fail if package_version not set
+        if: ${{ steps.package-version.outputs.package_version == '' }}
         run: |
           echo "Current version was not set!" >&2
           exit 1
@@ -97,11 +97,11 @@ jobs:
       - name: Determine version bump
         id: determine-version-bump
         run: |
-          echo "Current version: ${{ steps.package-version.outputs.current-version }}"
+          echo "Current version: ${{ steps.package-version.outputs.package_version }}"
           echo "Branch name: ${{ steps.get-head-branch-name.outputs.branch_name }}"
 
           BRANCH_NAME="${{ steps.get-head-branch-name.outputs.branch_name }}"
-          CURRENT_VERSION="${{ steps.package-version.outputs.current-version }}"
+          CURRENT_VERSION="${{ steps.package-version.outputs.package_version }}"
 
           if [[ "$BRANCH_NAME" == *"release/"* ]]; then
             echo "This is a release branch. Setting version bump to 'major'."
