@@ -88,7 +88,8 @@ jobs:
         id: package-name
         run: |
           PACKAGE_NAME=$(npm pkg get name)
-          echo "package_name=$PACKAGE_NAME" >> $GITHUB_OUTPUT
+          TRIMMED_PACKAGE_NAME=$(echo "$PACKAGE_NAME" | sed 's/"//g')
+          echo "package_name=$TRIMMED_PACKAGE_NAME" >> $GITHUB_OUTPUT
 
       - name: Determine version bump
         id: determine-version-bump
@@ -158,7 +159,7 @@ jobs:
       - name: Generate install cmd
         id: generate-install-cmd
         run: |
-          INSTALL_CMD=npm install ${{ steps.package-name.outputs.package_name}}@${{ steps.bump-version.outputs.published_version }}
+          INSTALL_CMD="npm install ${{ steps.package-name.outputs.package_name}}@${{ steps.bump-version.outputs.published_version }}"
           echo $INSTALL_CMD
           echo "install_cmd=$INSTALL_CMD" >> $GITHUB_OUTPUT
 
