@@ -84,6 +84,12 @@ jobs:
           echo "Current version was not set!" >&2
           exit 1
 
+      - name: Get package name
+        id: package-name
+        run: |
+          PACKAGE_NAME=$(npm pkg get name)
+          echo "package_name=$PACKAGE_NAME" >> $GITHUB_OUTPUT
+
       - name: Determine version bump
         id: determine-version-bump
         run: |
@@ -147,8 +153,10 @@ jobs:
           npm version ${{ inputs.canary && 'pre' || '' }}${{ steps.determine-version-bump.outputs.version_bump }} ${{ inputs.canary && '--preid=canary-' || '' }}${{ inputs.canary && inputs.commit_hash || '' }} -m "Bump version to %s [skip ci]"
 
       - name: Publish package
+        id: publish-package
         run: |
-          npm publish ${{ inputs.build && '' || '--ignore-scripts' }} --tag ${{ inputs.canary && 'canary' || 'latest' }}
+          PUBLISHED_VERSION=$(npm publish ${{ inputs.build && '' || '--ignore-scripts' }} --tag ${{ inputs.canary && 'canary' || 'latest' }})
+          echo "published_version=$PUBLISHED_VERSION" >> $GITHUB_OUTPUT
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN_PUBLISH }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN_PUBLISH }}
@@ -159,3 +167,11 @@ jobs:
         with:
           github_token: ${{ steps.generate-token.outputs.token }}
           branch: ${{ github.ref }}
+
+      - name: Update PR Description
+        uses: nefrob/pr-description@v1.2.0
+        with:
+            content: "<!-- published package install -->\n`npm install {{ steps.package-name.outputs.package_name}}@{{ steps.publish-package.outputs.published_version }}`!\n<!-- end published package install -->"
+            regex: "<!-- start match -->.*?<!-- end match -->"
+            regexFlags: ims
+            token: ${{ secrets.GITHUB_TOKEN }}
