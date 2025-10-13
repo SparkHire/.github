@@ -150,13 +150,21 @@ jobs:
 
       - name: Bump version
         run: |
-          npm version ${{ inputs.canary && 'pre' || '' }}${{ steps.determine-version-bump.outputs.version_bump }} ${{ inputs.canary && '--preid=canary-' || '' }}${{ inputs.canary && inputs.commit_hash || '' }} -m "Bump version to %s [skip ci]"
+          PUBLISHED_VERSION=$(npm version ${{ inputs.canary && 'pre' || '' }}${{ steps.determine-version-bump.outputs.version_bump }} ${{ inputs.canary && '--preid=canary-' || '' }}${{ inputs.canary && inputs.commit_hash || '' }} -m "Bump version to %s [skip ci]")
+          echo $PUBLISHED_VERSION
+          echo "published_version=$PUBLISHED_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Generate install cmd
+        id: generate-install-cmd
+        run: |
+          INSTALL_CMD=npm install {{ steps.package-name.outputs.package_name}}@{{ steps.publish-package.outputs.published_version }}
+          echo $INSTALL_CMD
+          echo "install_cmd=$INSTALL_CMD" >> $GITHUB_OUTPUT
 
       - name: Publish package
         id: publish-package
         run: |
-          PUBLISHED_VERSION=$(npm publish ${{ inputs.build && '' || '--ignore-scripts' }} --tag ${{ inputs.canary && 'canary' || 'latest' }})
-          echo "published_version=$PUBLISHED_VERSION" >> $GITHUB_OUTPUT
+          npm publish ${{ inputs.build && '' || '--ignore-scripts' }} --tag ${{ inputs.canary && 'canary' || 'latest' }}
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN_PUBLISH }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN_PUBLISH }}
@@ -171,7 +179,7 @@ jobs:
       - name: Update PR Description
         uses: nefrob/pr-description@v1.2.0
         with:
-            content: "<!-- published package install -->\n`npm install {{ steps.package-name.outputs.package_name}}@{{ steps.publish-package.outputs.published_version }}`!\n<!-- end published package install -->"
+            content: "<!-- published package install -->\n`${{ steps.generate-install-cmd.outputs.install_cmd }}`!\n<!-- end published package install -->"
             regex: "<!-- start match -->.*?<!-- end match -->"
             regexFlags: ims
             token: ${{ secrets.GITHUB_TOKEN }}
