@@ -149,6 +149,7 @@ jobs:
           echo "Version bump type: ${{ steps.determine-version-bump.outputs.version_bump }}"
 
       - name: Bump version
+        id: bump-version
         run: |
           PUBLISHED_VERSION=$(npm version ${{ inputs.canary && 'pre' || '' }}${{ steps.determine-version-bump.outputs.version_bump }} ${{ inputs.canary && '--preid=canary-' || '' }}${{ inputs.canary && inputs.commit_hash || '' }} -m "Bump version to %s [skip ci]")
           echo $PUBLISHED_VERSION
@@ -157,7 +158,7 @@ jobs:
       - name: Generate install cmd
         id: generate-install-cmd
         run: |
-          INSTALL_CMD=npm install {{ steps.package-name.outputs.package_name}}@{{ steps.publish-package.outputs.published_version }}
+          INSTALL_CMD=npm install ${{ steps.package-name.outputs.package_name}}@${{ steps.bump-version.outputs.published_version }}
           echo $INSTALL_CMD
           echo "install_cmd=$INSTALL_CMD" >> $GITHUB_OUTPUT
 
