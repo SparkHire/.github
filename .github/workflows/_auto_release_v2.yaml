@@ -65,8 +65,13 @@ jobs:
       - name: Get merged branch name
         id: get-head-branch-name
         run: |
-          echo "Merged branch name: ${{ github.event.pull_request.head.ref }}"
-          echo "branch_name=${{ github.event.pull_request.head.ref }}" >> $GITHUB_OUTPUT
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            echo "Merged branch name: ${{ github.event.pull_request.head.ref }}"
+            echo "branch_name=${{ github.event.pull_request.head.ref }}" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.event_name }}" == "push" ]]; then
+            echo "Merged branch name: ${{ github.ref }}"
+            echo "branch_name=${{ github.ref }}" >> $GITHUB_OUTPUT
+          fi
 
       - name: Fail if branch_name not set
         if: ${{ steps.get-head-branch-name.outputs.branch_name == '' }}
