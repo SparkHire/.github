@@ -3,6 +3,9 @@ name: Bump Version on Push
 on:
   workflow_call:
     inputs:
+      commit_hash:
+        required: false
+        type: string
       canary:
         description: Set to true to perform canary build
         required: false
@@ -27,11 +30,23 @@ jobs:
           private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
 
       - name: Get info
-        id: get-info
+        id: get-commit-hash
         run: |
+          COMMIT_INPUT="${{ inputs.commit_hash }}"
+          GITHUB_SHA="${{ github.sha }}"
+
           echo "Workspace dir: ${{ github.workspace }}"
           echo "User: $(id -u -n) $(id -u):$(id -g)"
-          echo "commit_hash=$(echo ${{ github.sha }} | cut -c 1-7)" >> "$GITHUB_OUTPUT"
+
+          if [[ -z "$COMMIT_INPUT" ]]; then
+              HASH=$(echo "$GITHUB_SHA" | cut -c 1-7)
+              echo "Commit input is empty. Using current SHA: $HASH"
+          else
+              HASH="$COMMIT_INPUT"
+              echo "Commit input provided. Using: $HASH"
+          fi
+
+          echo "commit_hash=$HASH" >> "$GITHUB_OUTPUT"
 
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -160,13 +175,13 @@ jobs:
       - name: Download build
         uses: actions/download-artifact@v4
         with:
-          name: build-${{ steps.get-info.commit_hash }}
+          name: build-${{ steps.get-commit-hash.commit_hash }}
           path: ./
 
       - name: Bump version
         id: bump-version
         run: |
-          PUBLISHED_VERSION=$(npm version ${{ inputs.canary && 'pre' || '' }}${{ steps.determine-version-bump.outputs.version_bump }} ${{ inputs.canary && '--preid=canary-' || '' }}-${{ steps.get-head-branch-name.outputs.branch_name_sanatized }}-${{ inputs.canary && steps.get-info.commit_hash || '' }} -m "Bump version to %s [skip ci]")
+          PUBLISHED_VERSION=$(npm version ${{ inputs.canary && 'pre' || '' }}${{ steps.determine-version-bump.outputs.version_bump }} ${{ inputs.canary && '--preid=canary-' || '' }}-${{ steps.get-head-branch-name.outputs.branch_name_sanatized }}-${{ inputs.canary && steps.get-commit-hash.commit_hash || '' }} -m "Bump version to %s [skip ci]")
           echo $PUBLISHED_VERSION
           echo "published_version=$PUBLISHED_VERSION" >> $GITHUB_OUTPUT
 
