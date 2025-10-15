@@ -156,7 +156,7 @@ jobs:
       - name: Bump version
         id: bump-version
         run: |
-          PUBLISHED_VERSION=$(npm version ${{ inputs.canary && 'pre' || '' }}${{ steps.determine-version-bump.outputs.version_bump }} ${{ inputs.canary && '--preid=canary-' || '' }}${{ inputs.canary && inputs.commit_hash || '' }} -m "Bump version to %s [skip ci]")
+          PUBLISHED_VERSION=$(npm version ${{ inputs.canary && 'pre' || '' }}${{ steps.determine-version-bump.outputs.version_bump }} ${{ inputs.canary && '--preid=canary-' || '' }}${{ inputs.canary && steps.get-head-branch-name.outputs.branch_name || '' }} -m "Bump version to %s [skip ci]")
           echo $PUBLISHED_VERSION
           echo "published_version=$PUBLISHED_VERSION" >> $GITHUB_OUTPUT
 
