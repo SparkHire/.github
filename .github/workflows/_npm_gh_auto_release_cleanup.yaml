@@ -1,0 +1,167 @@
+name: Bump Version on Push
+
+on:
+  workflow_call:
+    inputs:
+      days:
+        description: Set the number of days to retain items for
+        required: false
+        type: string
+        default: 30
+      dry_run:
+        description: Set to true to test publish action
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Fail if not pull request closed event
+        if: ${{ github.event_name != 'pull_request' || github.event.action != 'closed' }}
+        run: |
+          echo "This workflow must be triggered by a pull request being closed." >&2
+          exit 1
+
+      - name: Generate a token
+        id: generate-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.GH_APP_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ steps.generate-token.outputs.token }}
+
+      - name: Set Git user
+        run: |
+          git config user.name "SparkHireBot"
+          git config user.email "dev@sparkhire.com"
+
+      - name: Setup Node 20.x
+        uses: actions/setup-node@v4
+        with:
+          registry-url: https://registry.npmjs.org
+          node-version: 20.x
+
+      - name: Npm cache
+        id: cache-npm
+        uses: actions/cache@v4
+        with:
+          path: ./node_modules
+          key: ${{ runner.os }}-build-cache-node-modules-${{ hashFiles('**/package-lock.json') }}
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN_PUBLISH }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN_PUBLISH }}
+          GITHUB_TOKEN: ${{ steps.generate-token.outputs.token }}
+          GH_TOKEN: ${{ steps.generate-token.outputs.token }}
+
+      - if: ${{ steps.cache-npm.outputs.cache-hit != 'true' }}
+        name: Install npm dependencies
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_ACCESS_TOKEN }}
+        run: npm ci
+
+      - name: Get merged branch name
+        id: get-head-branch-name
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            echo "Merged branch name: ${{ github.event.pull_request.head.ref }}"
+            echo "branch_name=${{ github.event.pull_request.head.ref }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Fail if branch_name not set
+        if: ${{ steps.get-head-branch-name.outputs.branch_name == '' }}
+        run: |
+          echo "Branch name was not set" >&2
+          exit 1
+
+      - name: Get package name
+        id: package-name
+        run: |
+          PACKAGE_NAME=$(npm pkg get name)
+          TRIMMED_PACKAGE_NAME=$(echo "$PACKAGE_NAME" | sed 's/"//g')
+          echo "package_name=$TRIMMED_PACKAGE_NAME" >> $GITHUB_OUTPUT
+
+      - name: Attempt canary cleanup
+        run: |
+          PACKAGE_NAME=${{ steps.package-name.outputs.package_name }}
+          RETENTION_DAYS=0
+          DRY_RUN=${{ inputs.dry_run }}
+
+          echo "--- Unpublishing old canary versions ---"
+          echo "Target Package: $PACKAGE_NAME"
+          echo "Retention Policy: Keep canaries newer than $RETENTION_DAYS days."
+          echo "Mode: $(if [ "$DRY_RUN" = "true" ]; then echo "DRY RUN"; else echo "LIVE RUN"; fi)"
+          echo "----------------------------------------------"
+
+          echo "Fetching all versions for $PACKAGE_NAME..."
+          ALL_VERSIONS=$(npm view "$PACKAGE_NAME" versions --json 2>/dev/null | awk -F'"' '{for(i=2;i<=NF;i+=2) print $i}')
+
+          if [[ -z "$ALL_VERSIONS" ]]; then
+            echo "ERROR: Could not retrieve any versions for $PACKAGE_NAME. Check if the package exists or if you are logged in."
+            exit 0
+          fi
+
+          CANARY_VERSIONS=()
+
+          echo "Identifying canary versions (containing 'canary-')..."
+          for version in $ALL_VERSIONS; do
+              if [[ "$version" == *"canary-"* ]]; then
+                  CANARY_VERSIONS+=("$version")
+              fi
+          done
+
+          if [[ ${#CANARY_VERSIONS[@]} -eq 0 ]]; then
+              echo "🎉 Success: No 'canary-' versions found to unpublish."
+          else
+              echo "Found ${#CANARY_VERSIONS[@]} canary versions to check."
+
+              CUTOFF_TIMESTAMP=$(date -d "$RETENTION_DAYS days ago" +%s)
+
+              DELETED_COUNT=0
+              SKIPPED_COUNT=0
+
+              for canary_version in "${CANARY_VERSIONS[@]}"; do
+                  FULL_TARGET="$PACKAGE_NAME@$canary_version"
+
+                  VERSION_TIME_RAW=$(npm view "$FULL_TARGET" time --json 2>/dev/null | grep "$canary_version" | awk -F': ' '{print $2}' | tr -d '",')
+
+                  if [[ -z "$VERSION_TIME_RAW" ]]; then
+                      echo "Check $FULL_TARGET: ❌ FAILED to retrieve time metadata. Skipping."
+                      SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
+                      continue
+                  fi
+
+                  PUBLICATION_TIMESTAMP=$(date -d "$VERSION_TIME_RAW" +%s)
+
+                  if (( PUBLICATION_TIMESTAMP < CUTOFF_TIMESTAMP )); then
+                      echo -n "Check $FULL_TARGET: 🗑️ Older than $RETENTION_DAYS days ($VERSION_TIME_RAW). "
+
+                      if [ "$DRY_RUN" = "true" ]; then
+                          echo "[DRY RUN] Would unpublish."
+                      else
+                          if npm unpublish "$FULL_TARGET"; then
+                              echo "✅ UNPUBLISHED."
+                              DELETED_COUNT=$((DELETED_COUNT + 1))
+                          else
+                              echo "❌ FAILED (Unpublish command failed)."
+                              SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
+                          fi
+                      fi
+                  else
+                      echo "Check $FULL_TARGET: ⏳ Published recently ($VERSION_TIME_RAW). Skipping."
+                      SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
+                  fi
+              done
+              echo ""
+              echo "Cleanup complete. Total Deleted: $DELETED_COUNT, Total Skipped/Kept: $SKIPPED_COUNT."
+          fi
+
+          echo "----------------------------------------------"
+          echo "Script finished."
