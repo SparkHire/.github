@@ -67,11 +67,15 @@ jobs:
         run: |
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
             echo "Merged branch name: ${{ github.event.pull_request.head.ref }}"
-            echo "branch_name=${{ github.event.pull_request.head.ref }}" >> $GITHUB_OUTPUT
+            branch_name="${{ github.event.pull_request.head.ref }}"
           elif [[ "${{ github.event_name }}" == "push" ]]; then
             echo "Merged branch name: ${{ github.ref }}"
-            echo "branch_name=${{ github.ref }}" >> $GITHUB_OUTPUT
+            branch_name="${{ github.ref }}"
           fi
+
+          branch_name_sanitized="${branch_name//\//_}"
+          echo "branch_name=${branch_name}" >> $GITHUB_OUTPUT
+          echo "branch_name_sanatized=${branch_name_sanitized}" >> $GITHUB_OUTPUT
 
       - name: Fail if branch_name not set
         if: ${{ steps.get-head-branch-name.outputs.branch_name == '' }}
@@ -156,7 +160,7 @@ jobs:
       - name: Bump version
         id: bump-version
         run: |
-          PUBLISHED_VERSION=$(npm version ${{ inputs.canary && 'pre' || '' }}${{ steps.determine-version-bump.outputs.version_bump }} ${{ inputs.canary && '--preid=canary-' || '' }}${{ inputs.canary && steps.get-head-branch-name.outputs.branch_name || '' }} -m "Bump version to %s [skip ci]")
+          PUBLISHED_VERSION=$(npm version ${{ inputs.canary && 'pre' || '' }}${{ steps.determine-version-bump.outputs.version_bump }} ${{ inputs.canary && '--preid=canary-' || '' }}${{ inputs.canary && steps.get-head-branch-name.outputs.branch_name_sanatized || '' }} -m "Bump version to %s [skip ci]")
           echo $PUBLISHED_VERSION
           echo "published_version=$PUBLISHED_VERSION" >> $GITHUB_OUTPUT
 
