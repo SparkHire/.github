@@ -73,7 +73,7 @@ jobs:
             branch_name="${{ github.ref }}"
           fi
 
-          branch_name_sanitized="${branch_name//\//_}"
+          branch_name_sanitized="${branch_name//\//-}"
           echo "branch_name=${branch_name}" >> $GITHUB_OUTPUT
           echo "branch_name_sanatized=${branch_name_sanitized}" >> $GITHUB_OUTPUT
 
@@ -190,7 +190,7 @@ jobs:
         if: github.event_name == 'pull_request'
         uses: nefrob/pr-description@v1.2.0
         with:
-            content: "\n\n<!-- published package install -->\n**Install package cmd**\n```\n${{ steps.generate-install-cmd.outputs.install_cmd }}\n```\n<!-- end published package install -->"
-            regex: "\n\n<!-- published package install -->.*?<!-- end published package install -->"
-            regexFlags: ims
-            token: ${{ secrets.GITHUB_TOKEN }}
+          content: "\n\n<!-- published package install -->\n**Install package cmd**\n```\n${{ steps.generate-install-cmd.outputs.install_cmd }}\n```\n<!-- end published package install -->"
+          regex: "\n\n<!-- published package install -->.*?<!-- end published package install -->"
+          regexFlags: ims
+          token: ${{ secrets.GITHUB_TOKEN }}
