@@ -137,7 +137,7 @@ jobs:
               for canary_version in "${CANARY_VERSIONS[@]}"; do
                   FULL_TARGET="$PACKAGE_NAME@$canary_version"
 
-                  VERSION_TIME_RAW=$(npm view "$FULL_TARGET" time --json 2>/dev/null | grep "$canary_version" | awk -F': ' '{print $2}' | tr -d '",')
+                  VERSION_TIME_RAW=$(npm view "$FULL_TARGET" time --json 2>/dev/null | jq -r --arg v "$canary_version" '.[$v]')
 
                   if [[ -z "$VERSION_TIME_RAW" ]]; then
                       echo "Check $FULL_TARGET: ❌  FAILED to retrieve time metadata. Skipping."
