@@ -4,13 +4,15 @@ on:
   workflow_call:
     inputs:
       commit_hash:
-        required: true
+        required: false
         type: string
       canary:
+        description: Set to true to perform canary build
         required: false
         type: boolean
         default: false
       build:
+        description: Set to true to force a rebuild
         required: false
         type: boolean
         default: false
@@ -26,6 +28,25 @@ jobs:
         with:
           app-id: ${{ secrets.GH_APP_ID }}
           private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+
+      - name: Get info
+        id: get-commit-hash
+        run: |
+          COMMIT_INPUT="${{ inputs.commit_hash }}"
+          GITHUB_SHA="${{ github.sha }}"
+
+          echo "Workspace dir: ${{ github.workspace }}"
+          echo "User: $(id -u -n) $(id -u):$(id -g)"
+
+          if [[ -z "$COMMIT_INPUT" ]]; then
+              HASH=$(echo "$GITHUB_SHA" | cut -c 1-7)
+              echo "Commit input is empty. Using current SHA: $HASH"
+          else
+              HASH=$(echo "$COMMIT_INPUT" | cut -c 1-7)
+              echo "Commit input provided. Using: $HASH"
+          fi
+
+          echo "commit_hash=$HASH" >> "$GITHUB_OUTPUT"
 
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -67,11 +88,15 @@ jobs:
         run: |
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
             echo "Merged branch name: ${{ github.event.pull_request.head.ref }}"
-            echo "branch_name=${{ github.event.pull_request.head.ref }}" >> $GITHUB_OUTPUT
+            branch_name="${{ github.event.pull_request.head.ref }}"
           elif [[ "${{ github.event_name }}" == "push" ]]; then
             echo "Merged branch name: ${{ github.ref }}"
-            echo "branch_name=${{ github.ref }}" >> $GITHUB_OUTPUT
+            branch_name="${{ github.ref }}"
           fi
+
+          branch_name_sanitized="${branch_name//\//-}"
+          echo "branch_name=${branch_name}" >> $GITHUB_OUTPUT
+          echo "branch_name_sanitized=${branch_name_sanitized}" >> $GITHUB_OUTPUT
 
       - name: Fail if branch_name not set
         if: ${{ steps.get-head-branch-name.outputs.branch_name == '' }}
@@ -150,13 +175,13 @@ jobs:
       - name: Download build
         uses: actions/download-artifact@v4
         with:
-          name: build-${{ inputs.commit_hash }}
+          name: build-${{ steps.get-commit-hash.outputs.commit_hash }}
           path: ./
 
       - name: Bump version
         id: bump-version
         run: |
-          PUBLISHED_VERSION=$(npm version ${{ inputs.canary && 'pre' || '' }}${{ steps.determine-version-bump.outputs.version_bump }} ${{ inputs.canary && '--preid=canary-' || '' }}${{ inputs.canary && inputs.commit_hash || '' }} -m "Bump version to %s [skip ci]")
+          PUBLISHED_VERSION=$(npm version ${{ inputs.canary && 'pre' || '' }}${{ steps.determine-version-bump.outputs.version_bump }} ${{ inputs.canary && format('--preid=canary-{0}-{1}', steps.get-head-branch-name.outputs.branch_name_sanitized, steps.get-commit-hash.outputs.commit_hash) || '' }} -m "Bump version to %s [skip ci]")
           echo $PUBLISHED_VERSION
           echo "published_version=$PUBLISHED_VERSION" >> $GITHUB_OUTPUT
 
@@ -186,7 +211,7 @@ jobs:
         if: github.event_name == 'pull_request'
         uses: nefrob/pr-description@v1.2.0
         with:
-            content: "\n\n<!-- published package install -->\n**Install package cmd**\n```\n${{ steps.generate-install-cmd.outputs.install_cmd }}\n```\n<!-- end published package install -->"
-            regex: "\n\n<!-- published package install -->.*?<!-- end published package install -->"
-            regexFlags: ims
-            token: ${{ secrets.GITHUB_TOKEN }}
+          content: "\n\n<!-- published package install -->\n**Install package cmd**\n```\n${{ steps.generate-install-cmd.outputs.install_cmd }}\n```\n<!-- end published package install -->"
+          regex: "\n\n<!-- published package install -->.*?<!-- end published package install -->"
+          regexFlags: ims
+          token: ${{ secrets.GITHUB_TOKEN }}
