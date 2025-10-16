@@ -27,8 +27,8 @@ jobs:
 
       - name: Check branch name
         run: |
-          BRANCH_NAME="${{ github.head_ref }}"
-          if [[ ! "$BRANCH_NAME" =~ ^(patch/|minor/|major/) ]]; then
+          BRANCH_NAME="${{ steps.get-head-branch-name.outputs.branch_name }}"
+          if [[ ! "$BRANCH_NAME" =~ ^(patch/|minor/|major/|feature/|release/|hotfix/|dependabot/) ]]; then
             echo "Error: Branch name must start with patch/, minor/, or major/."
             exit 1
           fi
