@@ -42,7 +42,7 @@ jobs:
               HASH=$(echo "$GITHUB_SHA" | cut -c 1-7)
               echo "Commit input is empty. Using current SHA: $HASH"
           else
-              HASH="$COMMIT_INPUT"
+              HASH=$(echo "$COMMIT_INPUT" | cut -c 1-7)
               echo "Commit input provided. Using: $HASH"
           fi
 
