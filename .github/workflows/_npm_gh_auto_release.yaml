@@ -207,6 +207,12 @@ jobs:
           github_token: ${{ steps.generate-token.outputs.token }}
           branch: ${{ github.ref }}
 
+      - name: Create and push tag
+        if: ${{ inputs.canary == false }}
+        run: |
+          git tag ${{ steps.bump-version.outputs.published_version }}
+          git push origin ${{ steps.bump-version.outputs.published_version }}
+
       - name: Update PR Description
         if: github.event_name == 'pull_request'
         uses: nefrob/pr-description@v1.2.0
