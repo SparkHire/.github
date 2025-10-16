@@ -16,7 +16,6 @@ jobs:
 
           branch_name_sanitized="${branch_name//\//-}"
           echo "branch_name=${branch_name}" >> $GITHUB_OUTPUT
-          echo "branch_name_sanitized=${branch_name_sanitized}" >> $GITHUB_OUTPUT
 
       - name: Fail if branch_name not set
         if: ${{ steps.get-head-branch-name.outputs.branch_name == '' }}
@@ -28,6 +27,6 @@ jobs:
         run: |
           BRANCH_NAME="${{ steps.get-head-branch-name.outputs.branch_name }}"
           if [[ ! "$BRANCH_NAME" =~ ^(patch/|minor/|major/|feature/|release/|hotfix/|dependabot/) ]]; then
-            echo "Error: Branch name must start with patch/, minor/, or major/."
+            echo "Error: Branch name must start with one of: patch/, minor/, major/, feature/, release/, hotfix/, dependabot/."
             exit 1
           fi
