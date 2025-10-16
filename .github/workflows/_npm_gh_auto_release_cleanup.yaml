@@ -25,7 +25,7 @@ jobs:
 
     steps:
       - name: Fail if not pull request closed event
-        if: ${{ github.event_name != 'pull_request' && github.event.action != 'closed' && inputs.force != true }}
+        if: ${{ (github.event_name != 'pull_request' || github.event.action != 'closed') && inputs.force != true }}
         run: |
           echo "This workflow must be triggered by a pull request being closed." >&2
           exit 1
