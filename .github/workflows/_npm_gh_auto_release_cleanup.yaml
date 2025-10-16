@@ -3,7 +3,7 @@ name: Bump Version on Push
 on:
   workflow_call:
     inputs:
-      days:
+      retention_days:
         description: Set the number of days to retain items for
         required: false
         type: string
@@ -96,7 +96,7 @@ jobs:
       - name: Attempt canary cleanup
         run: |
           PACKAGE_NAME=${{ steps.package-name.outputs.package_name }}
-          RETENTION_DAYS=0
+          RETENTION_DAYS=${{ inputs.retention_days }}
           DRY_RUN=${{ inputs.dry_run }}
 
           echo "--- Unpublishing old canary versions ---"
