@@ -3,7 +3,7 @@ on:
   workflow_call:
 
 jobs:
-  check-branch-name:
+  run:
     runs-on: ubuntu-latest
     steps:
       - name: Get merged branch name
