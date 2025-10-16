@@ -17,7 +17,6 @@ jobs:
 
           branch_name_sanitized="${branch_name//\//-}"
           echo "branch_name=${branch_name}" >> $GITHUB_OUTPUT
-          echo "branch_name_sanitized=${branch_name_sanitized}" >> $GITHUB_OUTPUT
 
       - name: Fail if branch_name not set
         if: ${{ steps.get-head-branch-name.outputs.branch_name == '' }}
