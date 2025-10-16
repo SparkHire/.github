@@ -94,6 +94,9 @@ jobs:
           echo "package_name=$TRIMMED_PACKAGE_NAME" >> $GITHUB_OUTPUT
 
       - name: Attempt canary cleanup
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN_PUBLISH }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN_PUBLISH }}
         run: |
           PACKAGE_NAME=${{ steps.package-name.outputs.package_name }}
           RETENTION_DAYS=${{ inputs.retention_days }}
