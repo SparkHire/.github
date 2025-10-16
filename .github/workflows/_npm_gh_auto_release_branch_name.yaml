@@ -28,6 +28,6 @@ jobs:
         run: |
           BRANCH_NAME="${{ steps.get-head-branch-name.outputs.branch_name }}"
           if [[ ! "$BRANCH_NAME" =~ ^(patch/|minor/|major/|feature/|release/|hotfix/|dependabot/) ]]; then
-            echo "Error: Branch name must start with patch/, minor/, or major/."
+            echo "Error: Branch name must start with one of: patch/, minor/, major/, feature/, release/, hotfix/, dependabot/."
             exit 1
           fi
