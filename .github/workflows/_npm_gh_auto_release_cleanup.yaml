@@ -129,6 +129,8 @@ jobs:
 
               CUTOFF_TIMESTAMP=$(date -d "$RETENTION_DAYS days ago" +%s)
 
+              echo "CUTOFF_TIMESTAMP: $CUTOFF_TIMESTAMP"
+
               DELETED_COUNT=0
               SKIPPED_COUNT=0
 
@@ -138,7 +140,7 @@ jobs:
                   VERSION_TIME_RAW=$(npm view "$FULL_TARGET" time --json 2>/dev/null | grep "$canary_version" | awk -F': ' '{print $2}' | tr -d '",')
 
                   if [[ -z "$VERSION_TIME_RAW" ]]; then
-                      echo "Check $FULL_TARGET: ❌ FAILED to retrieve time metadata. Skipping."
+                      echo "Check $FULL_TARGET: ❌  FAILED to retrieve time metadata. Skipping."
                       SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
                       continue
                   fi
@@ -146,16 +148,16 @@ jobs:
                   PUBLICATION_TIMESTAMP=$(date -d "$VERSION_TIME_RAW" +%s)
 
                   if (( PUBLICATION_TIMESTAMP < CUTOFF_TIMESTAMP )); then
-                      echo -n "Check $FULL_TARGET: 🗑️ Older than $RETENTION_DAYS days ($VERSION_TIME_RAW). "
+                      echo -n "Check $FULL_TARGET: 🗑️  Older than $RETENTION_DAYS days ($VERSION_TIME_RAW). "
 
                       if [ "$DRY_RUN" = "true" ]; then
                           echo "[DRY RUN] Would unpublish."
                       else
                           if npm unpublish "$FULL_TARGET"; then
-                              echo "✅ UNPUBLISHED."
+                              echo "✅  UNPUBLISHED."
                               DELETED_COUNT=$((DELETED_COUNT + 1))
                           else
-                              echo "❌ FAILED (Unpublish command failed)."
+                              echo "❌  FAILED (Unpublish command failed)."
                               SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
                           fi
                       fi
