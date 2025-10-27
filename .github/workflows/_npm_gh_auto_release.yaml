@@ -83,23 +83,25 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_ACCESS_TOKEN }}
         run: npm ci
 
-      - name: Get merged branch name
-        id: get-head-branch-name
+      - name: Get branch name
+        id: get-branch-name
         run: |
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            echo "Merged branch name: ${{ github.event.pull_request.head.ref }}"
+            echo "Getting branch name from pull request head ref"
             branch_name="${{ github.event.pull_request.head.ref }}"
           elif [[ "${{ github.event_name }}" == "push" ]]; then
-            echo "Merged branch name: ${{ github.ref_name }}"
-            branch_name="${{ github.ref_name }}"
+            echo "Getting branch name from merged commit message"
+            merge_commit_message=$(git log --format=%B -n 1 "${GITHUB_SHA}")
+            branch_name=$(echo "$merge_commit_message" | grep -oP '(?<=from ).*' | cut -d/ -f2-)
           fi
 
+          echo "Branch name: ${{ github.event.pull_request.head.ref }}"
           branch_name_sanitized="${branch_name//\//-}"
           echo "branch_name=${branch_name}" >> $GITHUB_OUTPUT
           echo "branch_name_sanitized=${branch_name_sanitized}" >> $GITHUB_OUTPUT
 
       - name: Fail if branch_name not set
-        if: ${{ steps.get-head-branch-name.outputs.branch_name == '' }}
+        if: ${{ steps.get-branch-name.outputs.branch_name == '' }}
         run: |
           echo "Branch name was not set" >&2
           exit 1
@@ -128,9 +130,9 @@ jobs:
         id: determine-version-bump
         run: |
           echo "Current version: ${{ steps.package-version.outputs.package_version }}"
-          echo "Branch name: ${{ steps.get-head-branch-name.outputs.branch_name }}"
+          echo "Branch name: ${{ steps.get-branch-name.outputs.branch_name }}"
 
-          BRANCH_NAME="${{ steps.get-head-branch-name.outputs.branch_name }}"
+          BRANCH_NAME="${{ steps.get-branch-name.outputs.branch_name }}"
           CURRENT_VERSION="${{ steps.package-version.outputs.package_version }}"
 
           if [[ "$BRANCH_NAME" == *"release/"* ]]; then
@@ -164,8 +166,8 @@ jobs:
             echo "This is a test branch. Setting version bump to 'patch'."
             VERSION_BUMP="patch"
           else
-            echo "Branch name does not match any known patterns. Defaulting version bump to 'patch'."
-            VERSION_BUMP="patch"
+            echo "Branch name does not match any known patterns!"
+            exit 1
           fi
 
           echo "Determined version bump: $VERSION_BUMP"
@@ -181,7 +183,7 @@ jobs:
       - name: Bump version
         id: bump-version
         run: |
-          PUBLISHED_VERSION=$(npm version ${{ inputs.canary && 'pre' || '' }}${{ steps.determine-version-bump.outputs.version_bump }} ${{ inputs.canary && format('--preid=canary-{0}-{1}', steps.get-head-branch-name.outputs.branch_name_sanitized, steps.get-commit-hash.outputs.commit_hash) || '' }} -m "Bump version to %s [skip ci]")
+          PUBLISHED_VERSION=$(npm version ${{ inputs.canary && 'pre' || '' }}${{ steps.determine-version-bump.outputs.version_bump }} ${{ inputs.canary && format('--preid=canary-{0}-{1}', steps.get-branch-name.outputs.branch_name_sanitized, steps.get-commit-hash.outputs.commit_hash) || '' }} -m "Bump version to %s [skip ci]")
           echo $PUBLISHED_VERSION
           echo "published_version=$PUBLISHED_VERSION" >> $GITHUB_OUTPUT
 
