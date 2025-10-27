@@ -165,6 +165,9 @@ jobs:
           elif [[ "$BRANCH_NAME" == *"test/"* ]]; then
             echo "This is a test branch. Setting version bump to 'patch'."
             VERSION_BUMP="patch"
+          elif [[ "$BRANCH_NAME" == *"dependabot/"* ]]; then
+            echo "This is a dependabot branch. Setting version bump to 'patch'."
+            VERSION_BUMP="patch"
           else
             echo "Branch name does not match any known patterns!"
             exit 1
