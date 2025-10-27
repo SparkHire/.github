@@ -14,7 +14,6 @@ jobs:
             branch_name="${{ github.event.pull_request.head.ref }}"
           fi
 
-          branch_name_sanitized="${branch_name//\//-}"
           echo "branch_name=${branch_name}" >> $GITHUB_OUTPUT
 
       - name: Fail if branch_name not set
