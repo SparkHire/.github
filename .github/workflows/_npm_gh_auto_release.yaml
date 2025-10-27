@@ -90,8 +90,8 @@ jobs:
             echo "Merged branch name: ${{ github.event.pull_request.head.ref }}"
             branch_name="${{ github.event.pull_request.head.ref }}"
           elif [[ "${{ github.event_name }}" == "push" ]]; then
-            echo "Merged branch name: ${{ github.head_ref || github.ref_name }}"
-            branch_name="${{ github.head_ref || github.ref_name }}"
+            echo "Merged branch name: ${{ github.ref_name }}"
+            branch_name="${{ github.ref_name }}"
           fi
 
           branch_name_sanitized="${branch_name//\//-}"
