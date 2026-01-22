@@ -91,8 +91,18 @@ jobs:
             branch_name="${{ github.event.pull_request.head.ref }}"
           elif [[ "${{ github.event_name }}" == "push" ]]; then
             echo "Getting branch name from merged commit message"
-            merge_commit_message=$(git log --format=%B -n 1 "${GITHUB_SHA}")
-            branch_name=$(echo "$merge_commit_message" | grep -oP '(?<=from ).*' | cut -d/ -f2-)
+            # Get only the first line (title) of the merge commit to avoid matching "from" in body text
+            merge_commit_title=$(git log --format=%s -n 1 "${GITHUB_SHA}")
+            echo "Merge commit title: $merge_commit_title"
+            # Match specifically the GitHub merge commit format: "Merge pull request #XX from owner/branch"
+            if [[ "$merge_commit_title" =~ ^Merge\ pull\ request\ \#[0-9]+\ from\ (.+)$ ]]; then
+              full_branch="${BASH_REMATCH[1]}"
+              # Remove owner prefix (e.g., "SparkHire/dependabot/..." -> "dependabot/...")
+              branch_name=$(echo "$full_branch" | cut -d/ -f2-)
+            else
+              echo "Warning: Commit is not a merge commit, skipping branch name extraction"
+              branch_name=""
+            fi
           fi
 
           echo "Branch name: ${{ github.event.pull_request.head.ref }}"
