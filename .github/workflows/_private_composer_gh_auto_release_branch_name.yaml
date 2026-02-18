@@ -1,0 +1,31 @@
+name: Validate PR Branch Name
+on:
+  workflow_call:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get merged branch name
+        id: get-head-branch-name
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            echo "Merged branch name: ${{ github.event.pull_request.head.ref }}"
+            branch_name="${{ github.event.pull_request.head.ref }}"
+          fi
+
+          echo "branch_name=${branch_name}" >> $GITHUB_OUTPUT
+
+      - name: Fail if branch_name not set
+        if: ${{ steps.get-head-branch-name.outputs.branch_name == '' }}
+        run: |
+          echo "Branch name was not set" >&2
+          exit 1
+
+      - name: Check branch name
+        run: |
+          BRANCH_NAME="${{ steps.get-head-branch-name.outputs.branch_name }}"
+          if [[ ! "$BRANCH_NAME" =~ ^(patch/|minor/|major/|feature/|release/|hotfix/|dependabot/) ]]; then
+            echo "Error: Branch name must start with one of: patch/, minor/, major/, feature/, release/, hotfix/, dependabot/."
+            exit 1
+          fi
