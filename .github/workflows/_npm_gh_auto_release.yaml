@@ -145,37 +145,37 @@ jobs:
           BRANCH_NAME="${{ steps.get-branch-name.outputs.branch_name }}"
           CURRENT_VERSION="${{ steps.package-version.outputs.package_version }}"
 
-          if [[ "$BRANCH_NAME" == *"release/"* ]]; then
+          if [[ "$BRANCH_NAME" == "release/"* ]]; then
             echo "This is a release branch. Setting version bump to 'major'."
             VERSION_BUMP="major"
-          elif [[ "$BRANCH_NAME" == *"major/"* ]]; then
+          elif [[ "$BRANCH_NAME" == "major/"* ]]; then
             echo "This is a major branch. Setting version bump to 'major'."
             VERSION_BUMP="major"
-          elif [[ "$BRANCH_NAME" == *"minor/"* ]]; then
+          elif [[ "$BRANCH_NAME" == "minor/"* ]]; then
             echo "This is a minor branch. Setting version bump to 'minor'."
             VERSION_BUMP="minor"
-          elif [[ "$BRANCH_NAME" == *"patch/"* ]]; then
+          elif [[ "$BRANCH_NAME" == "patch/"* ]]; then
             echo "This is a patch branch. Setting version bump to 'patch'."
             VERSION_BUMP="patch"
-          elif [[ "$BRANCH_NAME" == *"hotfix/"* ]]; then
+          elif [[ "$BRANCH_NAME" == "hotfix/"* ]]; then
             echo "This is a hotfix branch. Setting version bump to 'patch'."
             VERSION_BUMP="patch"
-          elif [[ "$BRANCH_NAME" == *"feature/"* ]]; then
+          elif [[ "$BRANCH_NAME" == "feature/"* ]]; then
             echo "This is a feature branch. Setting version bump to 'minor'."
             VERSION_BUMP="minor"
-          elif [[ "$BRANCH_NAME" == *"bugfix/"* ]]; then
+          elif [[ "$BRANCH_NAME" == "bugfix/"* ]]; then
             echo "This is a bugfix branch. Setting version bump to 'patch'."
             VERSION_BUMP="patch"
-          elif [[ "$BRANCH_NAME" == *"chore/"* ]]; then
+          elif [[ "$BRANCH_NAME" == "chore/"* ]]; then
             echo "This is a chore branch. Setting version bump to 'patch'."
             VERSION_BUMP="patch"
-          elif [[ "$BRANCH_NAME" == *"docs/"* ]]; then
+          elif [[ "$BRANCH_NAME" == "docs/"* ]]; then
             echo "This is a docs branch. Setting version bump to 'patch'."
             VERSION_BUMP="patch"
-          elif [[ "$BRANCH_NAME" == *"test/"* ]]; then
+          elif [[ "$BRANCH_NAME" == "test/"* ]]; then
             echo "This is a test branch. Setting version bump to 'patch'."
             VERSION_BUMP="patch"
-          elif [[ "$BRANCH_NAME" == *"dependabot/"* ]]; then
+          elif [[ "$BRANCH_NAME" == "dependabot/"* ]]; then
             echo "This is a dependabot branch. Setting version bump to 'patch'."
             VERSION_BUMP="patch"
           else
