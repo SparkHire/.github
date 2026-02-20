@@ -62,22 +62,6 @@ jobs:
           git config user.name "SparkHireBot"
           git config user.email "dev@sparkhire.com"
 
-      - name: Setup PHP
-        uses: shivammathur/setup-php@v2
-        with:
-          php-version: ${{ inputs.php_version }}
-          coverage: none
-
-      - name: Composer cache
-        id: cache-composer
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/composer
-          key: ${{ runner.os }}-build-cache-composer-modules-${{ hashFiles('**/composer.lock') }}
-
-      - name: Install dependencies
-        run: composer install --prefer-dist --no-progress --no-scripts
-
       - name: Get latest release version
         id: release-version
         env:
