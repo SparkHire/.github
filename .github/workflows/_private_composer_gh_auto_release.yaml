@@ -213,8 +213,12 @@ jobs:
           echo "Bumping version from $CURRENT_VERSION to $NEW_VERSION"
 
           # Create tag and release
-          git tag "v$NEW_VERSION"
-          git push origin "v$NEW_VERSION"
+          if git rev-parse "refs/tags/v$NEW_VERSION" >/dev/null 2>&1; then
+            echo "Tag v$NEW_VERSION already exists. Skipping tag creation and push."
+          else
+            git tag "v$NEW_VERSION"
+            git push origin "v$NEW_VERSION"
+          fi
 
           gh release create "v$NEW_VERSION" --generate-notes
 
