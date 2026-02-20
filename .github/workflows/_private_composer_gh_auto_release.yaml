@@ -9,12 +9,15 @@ on:
         type: string
       private_package_repo_workflow_id:
         required: false
-        default: 235090394
+        default: "235090394"
         type: string
       private_package_repo:
         required: false
         default: 'SparkHire/php-private-composer-registry'
         type: string
+      private_package_ref:
+        required: false
+        default: "main"
 
 jobs:
   run:
@@ -221,5 +224,6 @@ jobs:
           GH_TOKEN: ${{ steps.generate-token.outputs.token }}
           WORKFLOW_ID: ${{ inputs.private_package_repo_workflow_id }}
           REPO: ${{ inputs.private_package_repo }}
+          REF: ${{ inputs.private_package_ref }}
         run: |
-          gh workflow run "$WORKFLOW_ID" --repo "$REPO" --ref main
+          gh workflow run "$WORKFLOW_ID" --repo "$REPO" --ref $REF
