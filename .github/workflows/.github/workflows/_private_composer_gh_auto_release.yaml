@@ -109,8 +109,6 @@ jobs:
             fi
           fi
 
-          branch_name=major/test
-
           echo "Branch name: ${branch_name}"
           branch_name_sanitized="${branch_name//\//-}"
           echo "branch_name=${branch_name}" >> $GITHUB_OUTPUT
@@ -213,10 +211,10 @@ jobs:
           echo "Bumping version from $CURRENT_VERSION to $NEW_VERSION"
 
           # Create tag and release
-          # git tag "v$NEW_VERSION"
-          # git push origin "v$NEW_VERSION"
+          git tag "v$NEW_VERSION"
+          git push origin "v$NEW_VERSION"
 
-          # gh release create "v$NEW_VERSION" --generate-notes
+          gh release create "v$NEW_VERSION" --generate-notes
 
       - name: Update private package repository
         env:
