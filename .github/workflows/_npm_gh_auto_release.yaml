@@ -16,6 +16,9 @@ on:
         required: false
         type: boolean
         default: false
+      commit_hash:
+        required: false
+        type: string
 
 jobs:
   run:
