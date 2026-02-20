@@ -1,0 +1,227 @@
+name: private_composer_auto_release
+
+on:
+  workflow_call:
+    inputs:
+      php_version:
+        required: false
+        default: '8.3'
+        type: string
+      private_package_repo_workflow_id:
+        required: false
+        default: 235090394
+        type: string
+      private_package_repo:
+        required: false
+        default: 'SparkHire/php-private-composer-registry'
+        type: string
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Generate a token
+        id: generate-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.GH_APP_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          permission-issues: write
+
+      - name: Get info
+        id: get-commit-hash
+        run: |
+          COMMIT_INPUT="${{ inputs.commit_hash }}"
+          GITHUB_SHA="${{ github.sha }}"
+
+          echo "Workspace dir: ${{ github.workspace }}"
+          echo "User: $(id -u -n) $(id -u):$(id -g)"
+
+          if [[ -z "$COMMIT_INPUT" ]]; then
+            HASH=$(echo "$GITHUB_SHA" | cut -c 1-7)
+            echo "Commit input is empty. Using current SHA: $HASH"
+          else
+            HASH=$(echo "$COMMIT_INPUT" | cut -c 1-7)
+            echo "Commit input provided. Using: $HASH"
+          fi
+
+          echo "commit_hash=$HASH" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ steps.generate-token.outputs.token }}
+
+      - name: Set Git user
+        run: |
+          git config user.name "SparkHireBot"
+          git config user.email "dev@sparkhire.com"
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ inputs.php_version }}
+          coverage: none
+
+      - name: Composer cache
+        id: cache-composer
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/composer
+          key: ${{ runner.os }}-build-cache-composer-modules-${{ hashFiles('**/composer.lock') }}
+
+      - name: Install dependencies
+        run: composer install --prefer-dist --no-progress --no-scripts
+
+      - name: Get latest release version
+        id: release-version
+        env:
+          GH_TOKEN: ${{ steps.generate-token.outputs.token }}
+        run: |
+          VERSION=$(gh release list --limit 1 --json tagName --jq '.[0].tagName')
+          # Remove 'v' prefix if it exists
+          VERSION=${VERSION#v}
+          echo "Latest release: $VERSION"
+          echo "package_version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Get branch name
+        id: get-branch-name
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            echo "Getting branch name from pull request head ref"
+            branch_name="${{ github.event.pull_request.head.ref }}"
+          elif [[ "${{ github.event_name }}" == "push" ]]; then
+            echo "Getting branch name from merged commit message"
+            # Get only the first line (title) of the merge commit to avoid matching "from" in body text
+            merge_commit_title=$(git log --format=%s -n 1 "${GITHUB_SHA}")
+            echo "Merge commit title: $merge_commit_title"
+            # Match specifically the GitHub merge commit format: "Merge pull request #XX from owner/branch"
+            if [[ "$merge_commit_title" =~ ^Merge\ pull\ request\ \#[0-9]+\ from\ (.+)$ ]]; then
+              full_branch="${BASH_REMATCH[1]}"
+              # Remove owner prefix (e.g., "SparkHire/dependabot/..." -> "dependabot/...")
+              branch_name=$(echo "$full_branch" | cut -d/ -f2-)
+            else
+              echo "Warning: Commit is not a merge commit, skipping branch name extraction"
+              branch_name=""
+            fi
+          fi
+
+          branch_name=major/test
+
+          echo "Branch name: ${branch_name}"
+          branch_name_sanitized="${branch_name//\//-}"
+          echo "branch_name=${branch_name}" >> $GITHUB_OUTPUT
+          echo "branch_name_sanitized=${branch_name_sanitized}" >> $GITHUB_OUTPUT
+
+      - name: Fail if branch_name not set
+        if: ${{ steps.get-branch-name.outputs.branch_name == '' }}
+        run: |
+          echo "Branch name was not set" >&2
+          exit 1
+
+      - name: Determine version bump
+        id: determine-version-bump
+        run: |
+          echo "Current version: ${{ steps.release-version.outputs.package_version }}"
+          echo "Branch name: ${{ steps.get-branch-name.outputs.branch_name }}"
+
+          BRANCH_NAME="${{ steps.get-branch-name.outputs.branch_name }}"
+          CURRENT_VERSION="${{ steps.release-version.outputs.package_version }}"
+
+          if [[ "$BRANCH_NAME" == *"release/"* ]]; then
+            echo "This is a release branch. Setting version bump to 'major'."
+            VERSION_BUMP="major"
+          elif [[ "$BRANCH_NAME" == *"major/"* ]]; then
+            echo "This is a major branch. Setting version bump to 'major'."
+            VERSION_BUMP="major"
+          elif [[ "$BRANCH_NAME" == *"minor/"* ]]; then
+            echo "This is a minor branch. Setting version bump to 'minor'."
+            VERSION_BUMP="minor"
+          elif [[ "$BRANCH_NAME" == *"patch/"* ]]; then
+            echo "This is a patch branch. Setting version bump to 'patch'."
+            VERSION_BUMP="patch"
+          elif [[ "$BRANCH_NAME" == *"hotfix/"* ]]; then
+            echo "This is a hotfix branch. Setting version bump to 'patch'."
+            VERSION_BUMP="patch"
+          elif [[ "$BRANCH_NAME" == *"feature/"* ]]; then
+            echo "This is a feature branch. Setting version bump to 'minor'."
+            VERSION_BUMP="minor"
+          elif [[ "$BRANCH_NAME" == *"bugfix/"* ]]; then
+            echo "This is a bugfix branch. Setting version bump to 'patch'."
+            VERSION_BUMP="patch"
+          elif [[ "$BRANCH_NAME" == *"chore/"* ]]; then
+            echo "This is a chore branch. Setting version bump to 'patch'."
+            VERSION_BUMP="patch"
+          elif [[ "$BRANCH_NAME" == *"docs/"* ]]; then
+            echo "This is a docs branch. Setting version bump to 'patch'."
+            VERSION_BUMP="patch"
+          elif [[ "$BRANCH_NAME" == *"test/"* ]]; then
+            echo "This is a test branch. Setting version bump to 'patch'."
+            VERSION_BUMP="patch"
+          elif [[ "$BRANCH_NAME" == *"dependabot/"* ]]; then
+            echo "This is a dependabot branch. Setting version bump to 'patch'."
+            VERSION_BUMP="patch"
+          else
+            echo "Branch name does not match any known patterns!"
+            exit 1
+          fi
+
+          echo "Determined version bump: $VERSION_BUMP"
+
+          echo "version_bump=$VERSION_BUMP" >> $GITHUB_OUTPUT
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ steps.generate-token.outputs.token }}
+        run: |
+          VERSION_BUMP="${{ steps.determine-version-bump.outputs.version_bump }}"
+          CURRENT_VERSION="${{ steps.release-version.outputs.package_version }}"
+
+          if [[ -z "$CURRENT_VERSION" ]]; then
+            echo "No current version found. Defaulting to 0.0.0"
+            CURRENT_VERSION="0.0.0"
+          fi
+
+          IFS='.' read -r -a VERSION_PARTS <<< "$CURRENT_VERSION"
+
+          MAJOR="${VERSION_PARTS[0]}"
+          MINOR="${VERSION_PARTS[1]}"
+          PATCH="${VERSION_PARTS[2]}"
+
+          # Handle missing parts if version is like "1.0"
+          MINOR=${MINOR:-0}
+          PATCH=${PATCH:-0}
+
+          if [[ "$VERSION_BUMP" == "major" ]]; then
+            MAJOR=$((MAJOR + 1))
+            MINOR=0
+            PATCH=0
+          elif [[ "$VERSION_BUMP" == "minor" ]]; then
+            MINOR=$((MINOR + 1))
+            PATCH=0
+          elif [[ "$VERSION_BUMP" == "patch" ]]; then
+            PATCH=$((PATCH + 1))
+          else
+            echo "Unknown version bump type: $VERSION_BUMP"
+            exit 1
+          fi
+
+          NEW_VERSION="$MAJOR.$MINOR.$PATCH"
+          echo "Bumping version from $CURRENT_VERSION to $NEW_VERSION"
+
+          # Create tag and release
+          # git tag "v$NEW_VERSION"
+          # git push origin "v$NEW_VERSION"
+
+          # gh release create "v$NEW_VERSION" --generate-notes
+
+      - name: Update private package repository
+        env:
+          GH_TOKEN: ${{ steps.generate-token.outputs.token }}
+          WORKFLOW_ID: ${{ inputs.private_package_repo_workflow_id }}
+          REPO: ${{ inputs.private_package_repo }}
+        run: |
+          gh workflow run "$WORKFLOW_ID" --repo "$REPO" --ref main
