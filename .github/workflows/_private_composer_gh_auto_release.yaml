@@ -18,6 +18,7 @@ on:
       private_package_ref:
         required: false
         default: "main"
+        type: string
 
 jobs:
   run:
