@@ -1,7 +1,7 @@
 ---
-name: 📄 Technical Specification
+name: Technical Specification
 about: Propose a structured technical design and implementation specification for a feature or system architectural change.
-title: '[Tech Spec]: <Feature Name>'
+title: '[Project-Name]:'
 labels: ['engineering', 'tech-spec']
 assignees: ''
 ---
