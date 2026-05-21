@@ -7,11 +7,11 @@ assignees: ''
 ---
 
 # Overview
-A concise, 2-3 sentence high-level summary of the proposed technical changes, their motivations, and the expected outcomes.
+A concise, 2-3 sentence high-level summary of the proposed technical changes.
 
 ---
 
-## Item I: [Component/Module Name]
+## I: [Component/Module Name]
 A high-level overview of how this module/component behaves, its structural role, and how it interacts with neighboring systems.
 
 ### Spec
@@ -20,7 +20,7 @@ A high-level overview of how this module/component behaves, its structural role,
 
 ---
 
-## Item II: [Component/Module Name]
+## II: [Component/Module Name]
 A high-level overview of this component's responsibilities and operations.
 
 ### Spec
