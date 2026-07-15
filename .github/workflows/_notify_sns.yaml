@@ -1,0 +1,75 @@
+name: Notify SNS
+
+on:
+  workflow_call:
+    inputs:
+      type:
+        description: 'Type of notification (info, warning, alarm, emergency)'
+        required: true
+        type: string
+      message:
+        description: 'The notification message'
+        required: true
+        type: string
+    secrets:
+      AWS_ROLE:
+        description: 'AWS IAM Role ARN to assume'
+        required: true
+      AWS_REGION:
+        description: 'AWS Region for assume-role and SNS publish'
+        required: true
+      AWS_SNS_TOPIC_INFO_ARN:
+        description: 'SNS Topic ARN for info notifications'
+        required: false
+      AWS_SNS_TOPIC_WARNING_ARN:
+        description: 'SNS Topic ARN for warning notifications'
+        required: false
+      AWS_SNS_TOPIC_ALARM_ARN:
+        description: 'SNS Topic ARN for alarm notifications'
+        required: false
+      AWS_SNS_TOPIC_EMERGENCY_ARN:
+        description: 'SNS Topic ARN for emergency notifications'
+        required: false
+
+jobs:
+  notify:
+    name: Notify SNS Topic
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Publish message to SNS
+        env:
+          TOPIC_INFO: ${{ secrets.AWS_SNS_TOPIC_INFO_ARN }}
+          TOPIC_WARNING: ${{ secrets.AWS_SNS_TOPIC_WARNING_ARN }}
+          TOPIC_ALARM: ${{ secrets.AWS_SNS_TOPIC_ALARM_ARN }}
+          TOPIC_EMERGENCY: ${{ secrets.AWS_SNS_TOPIC_EMERGENCY_ARN }}
+          NOTIFICATION_TYPE: ${{ inputs.type }}
+          NOTIFICATION_MESSAGE: ${{ inputs.message }}
+        run: |
+          TYPE=$(echo "$NOTIFICATION_TYPE" | tr '[:lower:]' '[:upper:]')
+          case "$TYPE" in
+            INFO) TOPIC_ARN="$TOPIC_INFO" ;;
+            WARNING) TOPIC_ARN="$TOPIC_WARNING" ;;
+            ALARM) TOPIC_ARN="$TOPIC_ALARM" ;;
+            EMERGENCY) TOPIC_ARN="$TOPIC_EMERGENCY" ;;
+            *)
+              echo "::error::Invalid notification type specified: $NOTIFICATION_TYPE (must be one of: info, warning, alarm, emergency)"
+              exit 1
+              ;;
+          esac
+
+          if [ -z "$TOPIC_ARN" ]; then
+            echo "::error::SNS Topic ARN for type '$TYPE' is not configured."
+            exit 1
+          fi
+
+          echo "Publishing notification of type $TYPE to SNS topic..."
+          aws sns publish --topic-arn "$TOPIC_ARN" --message "$NOTIFICATION_MESSAGE"
