@@ -1,0 +1,111 @@
+name: Update ECS Task Definition
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: 'The environment being deployed to'
+        required: true
+        type: string
+      aws_region:
+        description: 'The AWS region of the cluster'
+        required: true
+        type: string
+      ecs_cluster:
+        description: 'The ECS cluster'
+        required: true
+        type: string
+      ecs_service:
+        description: 'The ECS service to update'
+        required: true
+        type: string
+      image_sha:
+        description: 'The tag (sha) of the built image to release'
+        required: true
+        type: string
+      container_update_tag:
+        description: 'Comma-separated list of container names to update'
+        required: true
+        type: string
+      update_service:
+        description: 'Whether to update the ECS service task definition'
+        required: false
+        type: boolean
+        default: true
+      wait_for_stable:
+        description: 'Whether to wait for the ECS service to become stable'
+        required: false
+        type: boolean
+        default: true
+      is_excluded:
+        description: 'Whether this service is excluded from deployment updates'
+        required: false
+        type: boolean
+        default: false
+    outputs:
+      task_definition_arn:
+        description: 'The ARN of the registered task definition'
+        value: ${{ jobs.update.outputs.task_definition_arn }}
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  update:
+    runs-on: ${{ vars.DEFAULT_RUNNER }}
+    environment: ${{ inputs.environment }}
+    outputs:
+      task_definition_arn: ${{ steps.render-task-def.outputs.new_revision }}
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-region: ${{ inputs.aws_region }}
+          role-to-assume: ${{ secrets.AWS_ROLE }}
+
+      - name: Describe current task definition
+        id: get-task-def
+        run: |
+          TASK_DEF_ARN=$(aws ecs describe-services --cluster ${{ inputs.ecs_cluster }} --services ${{ inputs.ecs_service }} --query 'services[0].taskDefinition' --output text)
+          aws ecs describe-task-definition --task-definition $TASK_DEF_ARN --query taskDefinition > current-task-def.json
+
+      - name: Render and register new task definition
+        id: render-task-def
+        run: |
+          # Remove fields that prevent registering a new task definition
+          jq 'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)' current-task-def.json > temp-task-def.json
+
+          # Update the specified containers' image tags
+          jq --arg tag "${{ inputs.image_sha }}" --arg containers "${{ inputs.container_update_tag }}" '
+            ($containers | split(",")) as $target_containers |
+            .containerDefinitions |= map(
+              if .name | IN($target_containers[]) then
+                .image |= (split(":") | .[0] + ":" + $tag)
+              else
+                .
+              end
+            )
+          ' temp-task-def.json > task-definition.json
+
+          # Register the new task definition
+          NEW_TASK_DEF=$(aws ecs register-task-definition --cli-input-json file://task-definition.json)
+          echo "Registered Task Definition JSON:"
+          echo "$NEW_TASK_DEF" | jq '.'
+          NEW_REVISION=$(echo $NEW_TASK_DEF | jq -r '.taskDefinition.taskDefinitionArn')
+          echo "new_revision=$NEW_REVISION" >> $GITHUB_OUTPUT
+
+      - name: Update service
+        if: ${{ inputs.update_service && !inputs.is_excluded }}
+        run: |
+          aws ecs update-service \
+            --cluster ${{ inputs.ecs_cluster }} \
+            --service ${{ inputs.ecs_service }} \
+            --task-definition ${{ steps.render-task-def.outputs.new_revision }}
+
+      - name: Wait for deployment to succeed
+        if: ${{ inputs.update_service && inputs.wait_for_stable && !inputs.is_excluded }}
+        run: |
+          aws ecs wait services-stable \
+            --cluster ${{ inputs.ecs_cluster }} \
+            --services ${{ inputs.ecs_service }}
