@@ -194,7 +194,7 @@ jobs:
       matrix:
         service: ${{ fromJson(needs.get-services.outputs.services) }}
       fail-fast: false
-    uses: ./.github/workflows/update-task-definition.yaml
+    uses: ./.github/workflows/_aws_update_task_definition.yaml
     with:
       environment: ${{ inputs.environment }}
       aws_region: ${{ inputs.aws_region }}
