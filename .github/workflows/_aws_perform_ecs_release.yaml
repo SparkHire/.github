@@ -1,0 +1,208 @@
+name: Perform ECS Release
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: 'The environment being deployed to'
+        required: true
+        type: string
+      aws_account_id:
+        description: 'The AWS account ID of the cluster'
+        required: true
+        type: string
+      aws_region:
+        description: 'The AWS region of the cluster'
+        required: true
+        type: string
+      ecs_cluster:
+        description: 'The ECS cluster name or ARN to deploy to (optional if ecs_cluster_name_tag is provided). Supports {aws_region}, {region}, and {environment} template replacements. If a plain name is provided, the full ARN will be constructed using aws_account_id and aws_region.'
+        required: false
+        type: string
+      ecs_cluster_name_tag:
+        description: 'The ECS cluster Name tag to search for (optional if ecs_cluster is provided). Supports {region} and {environment} template replacements.'
+        required: false
+        type: string
+      image_sha:
+        description: 'The tag (sha) of the built image to release'
+        required: true
+        type: string
+      container_update_tag:
+        description: 'The name of the container definition to update'
+        required: true
+        type: string
+      exclude_tag_key:
+        description: 'The tag key used to filter out services (e.g. ExcludeFromRelease)'
+        required: false
+        type: string
+      exclude_tag_value:
+        description: 'The tag value used to filter out services (e.g. true)'
+        required: false
+        type: string
+      always_exclude_tag_key:
+        description: 'The tag key used to always filter out services (e.g. AlwaysExcludeFromRelease)'
+        required: false
+        type: string
+      force_release:
+        description: 'Force release even if the service is marked with the ExcludeFromRelease tag'
+        required: false
+        type: string
+        default: 'No'
+      update_service:
+        description: 'Whether to update the ECS service task definition'
+        required: false
+        type: boolean
+        default: true
+      wait_for_stable:
+        description: 'Whether to wait for the ECS service to become stable'
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  get-services:
+    runs-on: ${{ vars.DEFAULT_RUNNER }}
+    environment: ${{ inputs.environment }}
+    outputs:
+      services: ${{ steps.fetch.outputs.services }}
+      excluded_services: ${{ steps.fetch.outputs.excluded_services }}
+      resolved_cluster: ${{ steps.resolve-cluster.outputs.resolved_cluster }}
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-region: ${{ inputs.aws_region }}
+          role-to-assume: ${{ secrets.AWS_ROLE }}
+
+      - name: Resolve Cluster
+        id: resolve-cluster
+        run: |
+          CLUSTER_INPUT="${{ inputs.ecs_cluster }}"
+          CLUSTER_TAG_INPUT="${{ inputs.ecs_cluster_name_tag }}"
+
+          # Handle handlebars-style template replacements
+          if [ -n "$CLUSTER_TAG_INPUT" ]; then
+            CLUSTER_TAG_INPUT=$(echo "$CLUSTER_TAG_INPUT" | sed "s/{aws_region}/${{ inputs.aws_region }}/g" | sed "s/{region}/${{ inputs.aws_region }}/g" | sed "s/{environment}/${{ inputs.environment }}/g")
+          fi
+
+          if [ -n "$CLUSTER_INPUT" ]; then
+            CLUSTER_INPUT=$(echo "$CLUSTER_INPUT" | sed "s/{aws_region}/${{ inputs.aws_region }}/g" | sed "s/{region}/${{ inputs.aws_region }}/g" | sed "s/{environment}/${{ inputs.environment }}/g")
+            # If not already an ARN, construct the full ECS cluster ARN
+            if [[ "$CLUSTER_INPUT" != arn:* ]]; then
+              CLUSTER_INPUT="arn:aws:ecs:${{ inputs.aws_region }}:${{ inputs.aws_account_id }}:cluster/$CLUSTER_INPUT"
+            fi
+            echo "Using provided ECS cluster: $CLUSTER_INPUT"
+            echo "resolved_cluster=$CLUSTER_INPUT" >> $GITHUB_OUTPUT
+          elif [ -n "$CLUSTER_TAG_INPUT" ]; then
+            echo "Searching for ECS cluster by Name tag: $CLUSTER_TAG_INPUT..."
+
+            # Retrieve all cluster ARNs first
+            CLUSTER_ARNS=$(aws ecs list-clusters --query "clusterArns" --output text)
+
+            RESOLVED=""
+            for ARN in $CLUSTER_ARNS; do
+              # Describe tags for each cluster to find Name tag matching CLUSTER_TAG_INPUT
+              TAG_VAL=$(aws ecs list-tags-for-resource --resource-arn "$ARN" --query "tags[?key=='Name'].value" --output text 2>/dev/null || echo "")
+              if [ "$TAG_VAL" = "$CLUSTER_TAG_INPUT" ]; then
+                RESOLVED="$ARN"
+                break
+              fi
+            done
+
+            if [ -z "$RESOLVED" ]; then
+              # Fallback searching using the resourcegroupstaggingapi
+              RESOLVED=$(aws resourcegroupstaggingapi get-resources \
+                --region "${{ inputs.aws_region }}" \
+                --resource-type-filters "ecs:cluster" \
+                --tag-filters "Key=Name,Values=$CLUSTER_TAG_INPUT" \
+                --query "ResourceTagMappingList[0].ResourceARN" \
+                --output text 2>/dev/null || echo "")
+            fi
+
+            if [ -z "$RESOLVED" ] || [ "$RESOLVED" = "None" ]; then
+              echo "Error: Could not find any ECS Cluster with tag Name=$CLUSTER_TAG_INPUT in region ${{ inputs.aws_region }}"
+              exit 1
+            fi
+
+            echo "Resolved ECS cluster ARN: $RESOLVED"
+            echo "resolved_cluster=$RESOLVED" >> $GITHUB_OUTPUT
+          else
+            echo "Error: Neither ecs_cluster nor ecs_cluster_name_tag input was provided."
+            exit 1
+          fi
+
+      - name: Fetch Services
+        id: fetch
+        run: |
+          RESOLVED_CLUSTER="${{ steps.resolve-cluster.outputs.resolved_cluster }}"
+          if ! SERVICES_ARNS=$(aws ecs list-services --cluster "$RESOLVED_CLUSTER" --query "serviceArns" --output text 2>&1); then
+            echo "Failed to fetch services:"
+            exit 1
+          fi
+
+          echo "Service arns: $SERVICES_ARNS"
+
+          ALL_SERVICES="[]"
+          EXCLUDED_SERVICES="[]"
+          for ARN in $SERVICES_ARNS; do
+            ALL_SERVICES=$(echo "$ALL_SERVICES" | jq --arg arn "$ARN" '. + [$arn]')
+            EXCLUDE=false
+            FORCE_EXCLUDE=false
+            if [ -n "${{ inputs.exclude_tag_key }}" ]; then
+              TAG_VALUE=$(aws ecs list-tags-for-resource --resource-arn "$ARN" --query "tags[?key=='${{ inputs.exclude_tag_key }}'].value" --output text 2>/dev/null || echo "")
+
+              if [ -n "${{ inputs.exclude_tag_value }}" ]; then
+                if [ "$TAG_VALUE" == "${{ inputs.exclude_tag_value }}" ]; then
+                  EXCLUDE=true
+                fi
+              elif [ -n "$TAG_VALUE" ]; then
+                EXCLUDE=true
+              fi
+            fi
+
+            if [ -n "${{ inputs.always_exclude_tag_key }}" ]; then
+              ALWAYS_EXCLUDE_TAG_VALUE=$(aws ecs list-tags-for-resource --resource-arn "$ARN" --query "tags[?key=='${{ inputs.always_exclude_tag_key }}'].value" --output text 2>/dev/null || echo "")
+              if [ -n "$ALWAYS_EXCLUDE_TAG_VALUE" ]; then
+                FORCE_EXCLUDE=true
+              fi
+            fi
+
+            if [ "$FORCE_EXCLUDE" = true ] || { [ "$EXCLUDE" = true ] && [ "${{ inputs.force_release }}" != "Yes" ]; }; then
+              if [ "$FORCE_EXCLUDE" = true ]; then
+                echo "Excluding service $ARN based on always-exclude tag filter."
+              else
+                echo "Excluding service $ARN based on tag filter."
+              fi
+              EXCLUDED_SERVICES=$(echo "$EXCLUDED_SERVICES" | jq --arg arn "$ARN" '. + [$arn]')
+            fi
+          done
+
+          # Convert to single-line JSON array to avoid multiline GitHub Actions output errors
+          COMPACT_ALL=$(echo "$ALL_SERVICES" | jq -c '.')
+          COMPACT_EXCLUDED=$(echo "$EXCLUDED_SERVICES" | jq -c '.')
+          echo "services=$COMPACT_ALL" >> $GITHUB_OUTPUT
+          echo "excluded_services=$COMPACT_EXCLUDED" >> $GITHUB_OUTPUT
+
+  deploy:
+    needs: get-services
+    if: ${{ needs.get-services.outputs.services != '[]' && needs.get-services.outputs.services != '' }}
+    strategy:
+      matrix:
+        service: ${{ fromJson(needs.get-services.outputs.services) }}
+      fail-fast: false
+    uses: ./.github/workflows/update-task-definition.yaml
+    with:
+      environment: ${{ inputs.environment }}
+      aws_region: ${{ inputs.aws_region }}
+      ecs_cluster: ${{ needs.get-services.outputs.resolved_cluster }}
+      ecs_service: ${{ matrix.service }}
+      image_sha: ${{ inputs.image_sha }}
+      container_update_tag: ${{ inputs.container_update_tag }}
+      update_service: ${{ inputs.update_service }}
+      wait_for_stable: ${{ inputs.wait_for_stable }}
+      is_excluded: ${{ contains(fromJson(needs.get-services.outputs.excluded_services), matrix.service) }}
+    secrets: inherit

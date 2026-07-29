@@ -1,0 +1,254 @@
+name: Perform Code Deploy
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: 'The environment being deployed to'
+        required: true
+        type: string
+      aws_account_id:
+        description: 'The AWS account ID of the deployment'
+        required: true
+        type: string
+      aws_region:
+        description: 'The AWS region of the deployment'
+        required: true
+        type: string
+      code_deploy_app_tag:
+        description: 'The CodeDeploy application tag (Name tag value). Supports {aws_region} and {region} template replacements.'
+        required: true
+        type: string
+      code_deploy_group_tag:
+        description: 'The CodeDeploy deployment group tag (Name tag value). Supports {aws_region} and {region} template replacements.'
+        required: true
+        type: string
+      commit_hash:
+        description: 'The commit hash or ref to deploy'
+        required: true
+        type: string
+      code_deploy_s3_bucket:
+        description: 'The S3 bucket to store the AppSpec file (optional, required for ECS Blue/Green). Supports {aws_region} and {region} template replacements.'
+        required: false
+        type: string
+      code_deploy_s3_key_prefix:
+        description: 'The S3 key prefix for the AppSpec file.'
+        required: false
+        type: string
+        default: 'github/'
+      app_spec_container_name:
+        description: 'The target container name'
+        required: true
+        type: string
+      app_spec_container_port:
+        description: 'The target container port'
+        required: true
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ${{ vars.DEFAULT_BUILD_RUNNER }}
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-region: ${{ inputs.aws_region }}
+          role-to-assume: ${{ secrets.AWS_ROLE }}
+
+      - name: Create and monitor CodeDeploy deployment
+        run: |
+          CODE_DEPLOY_APP_TAG=$(echo "${{ inputs.code_deploy_app_tag }}" | sed "s/{aws_region}/${{ inputs.aws_region }}/g" | sed "s/{region}/${{ inputs.aws_region }}/g")
+          CODE_DEPLOY_GROUP_TAG=$(echo "${{ inputs.code_deploy_group_tag }}" | sed "s/{aws_region}/${{ inputs.aws_region }}/g" | sed "s/{region}/${{ inputs.aws_region }}/g")
+
+          echo "Resolving CodeDeploy names from tags..."
+          echo "Application Tag (Name): $CODE_DEPLOY_APP_TAG"
+          echo "Deployment Group Tag (Name): $CODE_DEPLOY_GROUP_TAG"
+
+          echo "Finding CodeDeploy Application with tag Name=$CODE_DEPLOY_APP_TAG..."
+          APP_ARN=$(aws resourcegroupstaggingapi get-resources \
+            --region "${{ inputs.aws_region }}" \
+            --resource-type-filters "codedeploy:application" \
+            --tag-filters "Key=Name,Values=$CODE_DEPLOY_APP_TAG" \
+            --query "ResourceTagMappingList[0].ResourceARN" \
+            --output text)
+
+          if [ -z "$APP_ARN" ] || [ "$APP_ARN" = "None" ]; then
+            echo "Searching all applications directly via list-applications and checking tags..."
+            ALL_APPS=$(aws deploy list-applications --region "${{ inputs.aws_region }}" --query "applications" --output text)
+            for APP in $ALL_APPS; do
+              TAG_VAL=$(aws deploy list-tags-for-resource \
+                --region "${{ inputs.aws_region }}" \
+                --resource-arn "arn:aws:codedeploy:${{ inputs.aws_region }}:$(aws sts get-caller-identity --query Account --output text):application:$APP" \
+                --query "Tags[?Key=='Name'].Value" \
+                --output text 2>/dev/null || echo "")
+              if [ "$TAG_VAL" = "$CODE_DEPLOY_APP_TAG" ]; then
+                APP_NAME="$APP"
+                break
+              fi
+            done
+          else
+            APP_NAME=$(echo "$APP_ARN" | awk -F':application:' '{print $2}')
+          fi
+
+          if [ -z "$APP_NAME" ]; then
+            echo "Error: Could not find CodeDeploy Application with tag Name=$CODE_DEPLOY_APP_TAG in region ${{ inputs.aws_region }}."
+            exit 1
+          fi
+
+          echo "Found Application Name: $APP_NAME"
+
+          echo "Finding CodeDeploy Deployment Group for application $APP_NAME with tag Name=$CODE_DEPLOY_GROUP_TAG..."
+          GROUP_ARN=$(aws resourcegroupstaggingapi get-resources \
+            --region "${{ inputs.aws_region }}" \
+            --resource-type-filters "codedeploy:deploymentgroup" \
+            --tag-filters "Key=Name,Values=$CODE_DEPLOY_GROUP_TAG" \
+            --query "ResourceTagMappingList[0].ResourceARN" \
+            --output text)
+
+          if [ -n "$GROUP_ARN" ] && [ "$GROUP_ARN" != "None" ]; then
+            GROUP_NAME=$(echo "$GROUP_ARN" | awk -F'/' '{print $2}')
+          else
+            echo "Searching deployment groups for application $APP_NAME..."
+            ALL_GROUPS=$(aws deploy list-deployment-groups \
+              --region "${{ inputs.aws_region }}" \
+              --application-name "$APP_NAME" \
+              --query "deploymentGroups" \
+              --output text)
+
+            ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+            for GROUP in $ALL_GROUPS; do
+              TAG_VAL=$(aws deploy list-tags-for-resource \
+                --region "${{ inputs.aws_region }}" \
+                --resource-arn "arn:aws:codedeploy:${{ inputs.aws_region }}:$ACCOUNT_ID:deploymentgroup:$APP_NAME/$GROUP" \
+                --query "Tags[?Key=='Name'].Value" \
+                --output text 2>/dev/null || echo "")
+              if [ "$TAG_VAL" = "$CODE_DEPLOY_GROUP_TAG" ]; then
+                GROUP_NAME="$GROUP"
+                break
+              fi
+            done
+          fi
+
+          if [ -z "$GROUP_NAME" ]; then
+            echo "Error: Could not find CodeDeploy Deployment Group with tag Name=$CODE_DEPLOY_GROUP_TAG for application $APP_NAME in region ${{ inputs.aws_region }}."
+            exit 1
+          fi
+
+          echo "Found Deployment Group Name: $GROUP_NAME"
+
+          S3_BUCKET=$(echo "${{ inputs.code_deploy_s3_bucket }}" | sed "s/{aws_region}/${{ inputs.aws_region }}/g" | sed "s/{region}/${{ inputs.aws_region }}/g")
+          if [ -n "$S3_BUCKET" ]; then
+            echo "Constructing AppSpec for ECS Blue/Green deployment..."
+            CLUSTER_NAME=$(aws deploy get-deployment-group --region "${{ inputs.aws_region }}" --application-name "$APP_NAME" --deployment-group-name "$GROUP_NAME" --query "deploymentGroupInfo.ecsServices[0].clusterName" --output text 2>/dev/null || echo "")
+            SERVICE_NAME=$(aws deploy get-deployment-group --region "${{ inputs.aws_region }}" --application-name "$APP_NAME" --deployment-group-name "$GROUP_NAME" --query "deploymentGroupInfo.ecsServices[0].serviceName" --output text 2>/dev/null || echo "")
+
+            if [ -z "$CLUSTER_NAME" ] || [ "$CLUSTER_NAME" = "None" ] || [ -z "$SERVICE_NAME" ] || [ "$SERVICE_NAME" = "None" ]; then
+              echo "Error: CodeDeploy Deployment Group $GROUP_NAME is not configured with an ECS service, or cannot retrieve it."
+              exit 1
+            fi
+
+            echo "Target ECS Cluster: $CLUSTER_NAME"
+            echo "Target ECS Service: $SERVICE_NAME"
+
+            CURRENT_TASK_DEF_ARN=$(aws ecs describe-services --region "${{ inputs.aws_region }}" --cluster "$CLUSTER_NAME" --services "$SERVICE_NAME" --query "services[0].taskDefinition" --output text)
+            FAMILY_NAME=$(echo "$CURRENT_TASK_DEF_ARN" | awk -F'/' '{print $2}' | cut -d':' -f1)
+
+            echo "ECS Service current task def family is $FAMILY_NAME. Fetching latest active revision..."
+            LATEST_TASK_DEF_ARN=$(aws ecs describe-task-definition --region "${{ inputs.aws_region }}" --task-definition "$FAMILY_NAME" --query "taskDefinition.taskDefinitionArn" --output text)
+            echo "Latest active Task Definition ARN: $LATEST_TASK_DEF_ARN"
+
+            # Create the appspec.json
+            jq -n \
+              --arg taskDef "$LATEST_TASK_DEF_ARN" \
+              --arg containerName "${{ inputs.app_spec_container_name }}" \
+              --argjson containerPort "${{ inputs.app_spec_container_port }}" \
+              '{
+                version: "0.0",
+                Resources: [
+                  {
+                    TargetService: {
+                      Type: "AWS::ECS::Service",
+                      Properties: {
+                        TaskDefinition: $taskDef,
+                        LoadBalancerInfo: {
+                          ContainerName: $containerName,
+                          ContainerPort: $containerPort
+                        }
+                      }
+                    }
+                  }
+                ]
+              }' > appspec.json
+
+            echo "Generated AppSpec Content:"
+            cat appspec.json
+
+            S3_KEY="${{ inputs.code_deploy_s3_key_prefix }}appspec-${{ inputs.commit_hash }}-${{ inputs.aws_region }}.json"
+            echo "Uploading AppSpec JSON to s3://$S3_BUCKET/$S3_KEY..."
+            aws s3 cp appspec.json "s3://$S3_BUCKET/$S3_KEY"
+
+            echo "Triggering ECS Blue/Green CodeDeploy deployment..."
+            DEPLOYMENT_ID=$(aws deploy create-deployment \
+              --region "${{ inputs.aws_region }}" \
+              --application-name "$APP_NAME" \
+              --deployment-group-name "$GROUP_NAME" \
+              --revision "{\"revisionType\": \"S3\", \"s3Location\": {\"bucket\": \"$S3_BUCKET\", \"key\": \"$S3_KEY\", \"bundleType\": \"JSON\"}}" \
+              --query "deploymentId" \
+              --output text)
+          else
+            echo "Triggering GitHub CodeDeploy deployment..."
+            echo "Application Name: $APP_NAME"
+            echo "Deployment Group: $GROUP_NAME"
+            echo "Repository: ${{ github.repository }}"
+            echo "Commit ID: ${{ inputs.commit_hash }}"
+
+            DEPLOYMENT_ID=$(aws deploy create-deployment \
+              --region "${{ inputs.aws_region }}" \
+              --application-name "$APP_NAME" \
+              --deployment-group-name "$GROUP_NAME" \
+              --revision "{\"revisionType\": \"GitHub\", \"gitHubLocation\": {\"repository\": \"${{ github.repository }}\", \"commitId\": \"${{ inputs.commit_hash }}\"}}" \
+              --query "deploymentId" \
+              --output text)
+          fi
+
+          if [ -z "$DEPLOYMENT_ID" ] || [ "$DEPLOYMENT_ID" = "None" ]; then
+            echo "Error: Failed to create CodeDeploy deployment."
+            exit 1
+          fi
+
+          echo "Deployment successfully created! Deployment ID: $DEPLOYMENT_ID"
+          echo "Monitoring deployment status..."
+
+          # Maximum wait time of 15 minutes (60 * 15 seconds)
+          MAX_ATTEMPTS=60
+          ATTEMPT=0
+
+          while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
+            DEPLOYMENT_INFO=$(aws deploy get-deployment --region "${{ inputs.aws_region }}" --deployment-id "$DEPLOYMENT_ID" --query "deploymentInfo.[status, errorInformation.message]" --output json)
+            STATUS=$(echo "$DEPLOYMENT_INFO" | jq -r '.[0]')
+            ERROR_MSG=$(echo "$DEPLOYMENT_INFO" | jq -r '.[1]')
+
+            echo "Current Status: $STATUS"
+
+            if [ "$STATUS" = "Succeeded" ]; then
+              echo "Deployment succeeded!"
+              exit 0
+            elif [ "$STATUS" = "Failed" ] || [ "$STATUS" = "Stopped" ]; then
+              echo "Deployment ended with status: $STATUS"
+              if [ "$ERROR_MSG" != "null" ]; then
+                echo "Error details: $ERROR_MSG"
+              fi
+              exit 1
+            fi
+
+            ATTEMPT=$((ATTEMPT + 1))
+            sleep 15
+          done
+
+          echo "Error: Deployment monitoring timed out after 15 minutes."
+          exit 1
