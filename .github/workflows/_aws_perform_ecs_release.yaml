@@ -189,6 +189,7 @@ jobs:
 
   deploy:
     needs: get-services
+    name: deploy-${{ matrix.service }}
     if: ${{ needs.get-services.outputs.services != '[]' && needs.get-services.outputs.services != '' }}
     strategy:
       matrix:
