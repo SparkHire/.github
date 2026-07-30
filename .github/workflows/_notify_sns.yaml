@@ -11,6 +11,11 @@ on:
         description: 'Type of notification (info, warning, alarm, emergency)'
         required: true
         type: string
+      subject:
+        description: 'The subject of the message'
+        required: false
+        type: string
+        default: 'GitHub'
       message:
         description: 'The notification message'
         required: true
@@ -58,6 +63,7 @@ jobs:
           TOPIC_EMERGENCY: ${{ secrets.AWS_SNS_TOPIC_EMERGENCY_ARN }}
           NOTIFICATION_TYPE: ${{ inputs.type }}
           NOTIFICATION_MESSAGE: ${{ inputs.message }}
+          NOTIFICATION_SUBJECT: ${{ inputs.subject }}
         run: |
           TYPE=$(echo "$NOTIFICATION_TYPE" | tr '[:lower:]' '[:upper:]')
           case "$TYPE" in
@@ -77,4 +83,4 @@ jobs:
           fi
 
           echo "Publishing notification of type $TYPE to SNS topic..."
-          aws sns publish --topic-arn "$TOPIC_ARN" --message "$NOTIFICATION_MESSAGE"
+          aws sns publish --topic-arn "$TOPIC_ARN" --message "$NOTIFICATION_MESSAGE" --subject "$NOTIFICATION_SUBJECT"
