@@ -251,4 +251,9 @@ jobs:
           done
 
           echo "Error: Deployment monitoring timed out after 15 minutes."
+          echo "Stopping deployment $DEPLOYMENT_ID and initiating rollback..."
+          aws deploy stop-deployment \
+            --region "${{ inputs.aws_region }}" \
+            --deployment-id "$DEPLOYMENT_ID" \
+            --auto-rollback-enabled || echo "Warning: Failed to stop deployment."
           exit 1
