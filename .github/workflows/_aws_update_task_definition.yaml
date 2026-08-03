@@ -74,7 +74,7 @@ jobs:
         id: render-task-def
         run: |
           # Remove fields that prevent registering a new task definition
-          jq 'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)' current-task-def.json > temp-task-def.json
+          jq 'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy, .deregisteredAt)' current-task-def.json > temp-task-def.json
 
           # Update the specified containers' image tags
           jq --arg tag "${{ inputs.image_sha }}" --arg containers "${{ inputs.container_update_tag }}" '
