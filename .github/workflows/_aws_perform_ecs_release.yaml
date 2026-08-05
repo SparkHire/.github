@@ -189,21 +189,17 @@ jobs:
 
   deploy:
     needs: get-services
-    name: deploy-${{ matrix.service }}
+    name: deploy
     if: ${{ needs.get-services.outputs.services != '[]' && needs.get-services.outputs.services != '' }}
-    strategy:
-      matrix:
-        service: ${{ fromJson(needs.get-services.outputs.services) }}
-      fail-fast: false
-    uses: ./.github/workflows/_aws_update_task_definition.yaml
+    uses: ./.github/workflows/_aws_update_ecs_services.yaml
     with:
       environment: ${{ inputs.environment }}
       aws_region: ${{ inputs.aws_region }}
       ecs_cluster: ${{ needs.get-services.outputs.resolved_cluster }}
-      ecs_service: ${{ matrix.service }}
+      ecs_services: ${{ needs.get-services.outputs.services }}
+      excluded_services: ${{ needs.get-services.outputs.excluded_services }}
       image_sha: ${{ inputs.image_sha }}
       container_update_tag: ${{ inputs.container_update_tag }}
       update_service: ${{ inputs.update_service }}
       wait_for_stable: ${{ inputs.wait_for_stable }}
-      is_excluded: ${{ contains(fromJson(needs.get-services.outputs.excluded_services), matrix.service) }}
     secrets: inherit
