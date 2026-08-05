@@ -1,0 +1,170 @@
+name: Update ECS Services
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: 'The environment being deployed to'
+        required: true
+        type: string
+      aws_region:
+        description: 'The AWS region of the cluster'
+        required: true
+        type: string
+      ecs_cluster:
+        description: 'The ECS cluster'
+        required: true
+        type: string
+      ecs_services:
+        description: 'JSON stringified array of ECS services to update'
+        required: true
+        type: string
+      excluded_services:
+        description: 'JSON stringified array of ECS services excluded from deployment updates'
+        required: false
+        type: string
+        default: '[]'
+      image_sha:
+        description: 'The tag (sha) of the built image to release'
+        required: true
+        type: string
+      container_update_tag:
+        description: 'Comma-separated list of container names to update'
+        required: true
+        type: string
+      update_service:
+        description: 'Whether to update the ECS service task definition'
+        required: false
+        type: boolean
+        default: true
+      wait_for_stable:
+        description: 'Whether to wait for the ECS service to become stable'
+        required: false
+        type: boolean
+        default: true
+    outputs:
+      task_definition_arns:
+        description: 'JSON stringified map or list of registered task definition ARNs'
+        value: ${{ jobs.update.outputs.task_definition_arns }}
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  update:
+    runs-on: ${{ vars.DEFAULT_RUNNER }}
+    environment: ${{ inputs.environment }}
+    outputs:
+      task_definition_arns: ${{ steps.update-services.outputs.task_definition_arns }}
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-region: ${{ inputs.aws_region }}
+          role-to-assume: ${{ secrets.AWS_ROLE }}
+
+      - name: Update ECS Services
+        id: update-services
+        run: |
+          SERVICES_JSON='${{ inputs.ecs_services }}'
+          EXCLUDED_JSON='${{ inputs.excluded_services }}'
+          IMAGE_TAG="${{ inputs.image_sha }}"
+          CONTAINERS="${{ inputs.container_update_tag }}"
+          CLUSTER="${{ inputs.ecs_cluster }}"
+          UPDATE_SERVICE="${{ inputs.update_service }}"
+          WAIT_FOR_STABLE="${{ inputs.wait_for_stable }}"
+
+          # Prepare temporary working directory
+          TMP_DIR=$(mktemp -d)
+          RESULT_FILE="$TMP_DIR/task_defs.json"
+          echo "{}" > "$RESULT_FILE"
+
+          update_single_service() {
+            local SERVICE="$1"
+            local SERVICE_TMP="$TMP_DIR/svc_${SERVICE//\//_}"
+            mkdir -p "$SERVICE_TMP"
+
+            # Check if excluded
+            IS_EXCLUDED=false
+            if echo "$EXCLUDED_JSON" | jq -e --arg svc "$SERVICE" '. | contains([$svc])' >/dev/null 2>&1; then
+              IS_EXCLUDED=true
+            fi
+
+            echo "=== Processing service: $SERVICE (Excluded: $IS_EXCLUDED) ==="
+
+            # 1. Describe current task definition
+            TASK_DEF_ARN=$(aws ecs describe-services --cluster "$CLUSTER" --services "$SERVICE" --query 'services[0].taskDefinition' --output text)
+            if [ -z "$TASK_DEF_ARN" ] || [ "$TASK_DEF_ARN" = "None" ]; then
+              echo "Error: Could not retrieve task definition for service $SERVICE"
+              return 1
+            fi
+
+            aws ecs describe-task-definition --task-definition "$TASK_DEF_ARN" --query taskDefinition > "$SERVICE_TMP/current-task-def.json"
+
+            # 2. Render new task definition
+            jq 'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy, .deregisteredAt)' "$SERVICE_TMP/current-task-def.json" > "$SERVICE_TMP/temp-task-def.json"
+
+            jq --arg tag "$IMAGE_TAG" --arg containers "$CONTAINERS" '
+              ($containers | split(",")) as $target_containers |
+              .containerDefinitions |= map(
+                if .name | IN($target_containers[]) then
+                  .image |= (split(":") | .[0] + ":" + $tag)
+                else
+                  .
+                end
+              )
+            ' "$SERVICE_TMP/temp-task-def.json" > "$SERVICE_TMP/task-definition.json"
+
+            # 3. Register new task definition
+            NEW_TASK_DEF=$(aws ecs register-task-definition --cli-input-json file://"$SERVICE_TMP/task-definition.json")
+            NEW_REVISION=$(echo "$NEW_TASK_DEF" | jq -r '.taskDefinition.taskDefinitionArn')
+            echo "Registered new task definition for $SERVICE: $NEW_REVISION"
+            echo "$SERVICE=$NEW_REVISION" >> "$TMP_DIR/task_def_outputs.txt"
+
+            # 4. Update service if enabled and not excluded
+            if [ "$UPDATE_SERVICE" = "true" ] && [ "$IS_EXCLUDED" = "false" ]; then
+              echo "Updating service $SERVICE..."
+              aws ecs update-service \
+                --cluster "$CLUSTER" \
+                --service "$SERVICE" \
+                --task-definition "$NEW_REVISION"
+
+              if [ "$WAIT_FOR_STABLE" = "true" ]; then
+                echo "Waiting for service $SERVICE to become stable..."
+                aws ecs wait services-stable \
+                  --cluster "$CLUSTER" \
+                  --services "$SERVICE"
+                echo "Service $SERVICE is stable."
+              fi
+            else
+              echo "Skipping service update for $SERVICE (update_service: $UPDATE_SERVICE, excluded: $IS_EXCLUDED)"
+            fi
+          }
+
+          PIDS=()
+          # Parse services JSON array
+          for SERVICE in $(echo "$SERVICES_JSON" | jq -r '.[]'); do
+            update_single_service "$SERVICE" &
+            PIDS+=($!)
+          done
+
+          # Wait for all background processes to complete and check status
+          FAILURES=0
+          for PID in "${PIDS[@]}"; do
+            wait "$PID" || FAILURES=$((FAILURES + 1))
+          done
+
+          if [ $FAILURES -gt 0 ]; then
+            echo "Error: $FAILURES service update job(s) failed."
+            exit 1
+          fi
+
+          # Output task definition ARNs as JSON object map
+          ARNS_JSON="{}"
+          if [ -f "$TMP_DIR/task_def_outputs.txt" ]; then
+            ARNS_JSON=$(jq -n -R '[inputs | split("=")] | map({key: .[0], value: .[1]}) | from_entries' "$TMP_DIR/task_def_outputs.txt")
+          fi
+
+          COMPACT_ARNS=$(echo "$ARNS_JSON" | jq -c '.')
+          echo "task_definition_arns=$COMPACT_ARNS" >> $GITHUB_OUTPUT
