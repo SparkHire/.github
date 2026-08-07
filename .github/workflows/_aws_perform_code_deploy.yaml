@@ -15,13 +15,21 @@ on:
         description: 'The AWS region of the deployment'
         required: true
         type: string
+      code_deploy_app_name:
+        description: 'The CodeDeploy application name (optional). Supports {aws_region} and {region} template replacements. Takes precedence over code_deploy_app_tag when set.'
+        required: false
+        type: string
       code_deploy_app_tag:
-        description: 'The CodeDeploy application tag (Name tag value). Supports {aws_region} and {region} template replacements.'
-        required: true
+        description: 'The CodeDeploy application tag (Name tag value). Supports {aws_region} and {region} template replacements. Used when code_deploy_app_name is not set.'
+        required: false
         type: string
       code_deploy_group_tag:
-        description: 'The CodeDeploy deployment group tag (Name tag value). Supports {aws_region} and {region} template replacements.'
-        required: true
+        description: 'The CodeDeploy deployment group tag (Name tag value). Supports {aws_region} and {region} template replacements. Used when code_deploy_group_name is not set.'
+        required: false
+        type: string
+      code_deploy_group_name:
+        description: 'The CodeDeploy deployment group name (optional). Supports {aws_region} and {region} template replacements. Takes precedence over code_deploy_group_tag when set.'
+        required: false
         type: string
       commit_hash:
         description: 'The commit hash or ref to deploy'
@@ -62,81 +70,128 @@ jobs:
 
       - name: Create and monitor CodeDeploy deployment
         run: |
+          CODE_DEPLOY_APP_NAME=$(echo "${{ inputs.code_deploy_app_name }}" | sed "s/{aws_region}/${{ inputs.aws_region }}/g" | sed "s/{region}/${{ inputs.aws_region }}/g")
           CODE_DEPLOY_APP_TAG=$(echo "${{ inputs.code_deploy_app_tag }}" | sed "s/{aws_region}/${{ inputs.aws_region }}/g" | sed "s/{region}/${{ inputs.aws_region }}/g")
+          CODE_DEPLOY_GROUP_NAME=$(echo "${{ inputs.code_deploy_group_name }}" | sed "s/{aws_region}/${{ inputs.aws_region }}/g" | sed "s/{region}/${{ inputs.aws_region }}/g")
           CODE_DEPLOY_GROUP_TAG=$(echo "${{ inputs.code_deploy_group_tag }}" | sed "s/{aws_region}/${{ inputs.aws_region }}/g" | sed "s/{region}/${{ inputs.aws_region }}/g")
 
-          echo "Resolving CodeDeploy names from tags..."
-          echo "Application Tag (Name): $CODE_DEPLOY_APP_TAG"
-          echo "Deployment Group Tag (Name): $CODE_DEPLOY_GROUP_TAG"
+          if [ -n "$CODE_DEPLOY_APP_NAME" ]; then
+            echo "Using provided CodeDeploy Application Name: $CODE_DEPLOY_APP_NAME"
+            APP_NAME_CHECK=$(aws deploy get-application \
+              --region "${{ inputs.aws_region }}" \
+              --application-name "$CODE_DEPLOY_APP_NAME" \
+              --query "application.name" \
+              --output text 2>/dev/null || echo "")
 
-          echo "Finding CodeDeploy Application with tag Name=$CODE_DEPLOY_APP_TAG..."
-          APP_ARN=$(aws resourcegroupstaggingapi get-resources \
-            --region "${{ inputs.aws_region }}" \
-            --resource-type-filters "codedeploy:application" \
-            --tag-filters "Key=Name,Values=$CODE_DEPLOY_APP_TAG" \
-            --query "ResourceTagMappingList[0].ResourceARN" \
-            --output text)
+            if [ -z "$APP_NAME_CHECK" ] || [ "$APP_NAME_CHECK" = "None" ]; then
+              echo "Error: Provided CodeDeploy Application Name '$CODE_DEPLOY_APP_NAME' was not found in region ${{ inputs.aws_region }}."
+              exit 1
+            fi
 
-          if [ -z "$APP_ARN" ] || [ "$APP_ARN" = "None" ]; then
-            echo "Searching all applications directly via list-applications and checking tags..."
-            ALL_APPS=$(aws deploy list-applications --region "${{ inputs.aws_region }}" --query "applications" --output text)
-            for APP in $ALL_APPS; do
-              TAG_VAL=$(aws deploy list-tags-for-resource \
-                --region "${{ inputs.aws_region }}" \
-                --resource-arn "arn:aws:codedeploy:${{ inputs.aws_region }}:$(aws sts get-caller-identity --query Account --output text):application:$APP" \
-                --query "Tags[?Key=='Name'].Value" \
-                --output text 2>/dev/null || echo "")
-              if [ "$TAG_VAL" = "$CODE_DEPLOY_APP_TAG" ]; then
-                APP_NAME="$APP"
-                break
-              fi
-            done
+            APP_NAME="$CODE_DEPLOY_APP_NAME"
           else
-            APP_NAME=$(echo "$APP_ARN" | awk -F':application:' '{print $2}')
-          fi
+            echo "Resolving CodeDeploy application from tag..."
+            echo "Application Tag (Name): $CODE_DEPLOY_APP_TAG"
 
-          if [ -z "$APP_NAME" ]; then
-            echo "Error: Could not find CodeDeploy Application with tag Name=$CODE_DEPLOY_APP_TAG in region ${{ inputs.aws_region }}."
-            exit 1
+            if [ -z "$CODE_DEPLOY_APP_TAG" ]; then
+              echo "Error: code_deploy_app_tag must be provided when code_deploy_app_name is not set."
+              exit 1
+            fi
+
+            echo "Finding CodeDeploy Application with tag Name=$CODE_DEPLOY_APP_TAG..."
+            APP_ARN=$(aws resourcegroupstaggingapi get-resources \
+              --region "${{ inputs.aws_region }}" \
+              --resource-type-filters "codedeploy:application" \
+              --tag-filters "Key=Name,Values=$CODE_DEPLOY_APP_TAG" \
+              --query "ResourceTagMappingList[0].ResourceARN" \
+              --output text)
+
+            if [ -z "$APP_ARN" ] || [ "$APP_ARN" = "None" ]; then
+              echo "Searching all applications directly via list-applications and checking tags..."
+              ALL_APPS=$(aws deploy list-applications --region "${{ inputs.aws_region }}" --query "applications" --output text)
+              for APP in $ALL_APPS; do
+                TAG_VAL=$(aws deploy list-tags-for-resource \
+                  --region "${{ inputs.aws_region }}" \
+                  --resource-arn "arn:aws:codedeploy:${{ inputs.aws_region }}:$(aws sts get-caller-identity --query Account --output text):application:$APP" \
+                  --query "Tags[?Key=='Name'].Value" \
+                  --output text 2>/dev/null || echo "")
+                if [ "$TAG_VAL" = "$CODE_DEPLOY_APP_TAG" ]; then
+                  APP_NAME="$APP"
+                  break
+                fi
+              done
+            else
+              APP_NAME=$(echo "$APP_ARN" | awk -F':application:' '{print $2}')
+            fi
+
+            if [ -z "$APP_NAME" ]; then
+              echo "Error: Could not find CodeDeploy Application with tag Name=$CODE_DEPLOY_APP_TAG in region ${{ inputs.aws_region }}."
+              exit 1
+            fi
           fi
 
           echo "Found Application Name: $APP_NAME"
 
-          echo "Finding CodeDeploy Deployment Group for application $APP_NAME with tag Name=$CODE_DEPLOY_GROUP_TAG..."
-          GROUP_ARN=$(aws resourcegroupstaggingapi get-resources \
-            --region "${{ inputs.aws_region }}" \
-            --resource-type-filters "codedeploy:deploymentgroup" \
-            --tag-filters "Key=Name,Values=$CODE_DEPLOY_GROUP_TAG" \
-            --query "ResourceTagMappingList[0].ResourceARN" \
-            --output text)
-
-          if [ -n "$GROUP_ARN" ] && [ "$GROUP_ARN" != "None" ]; then
-            GROUP_NAME=$(echo "$GROUP_ARN" | awk -F'/' '{print $2}')
-          else
-            echo "Searching deployment groups for application $APP_NAME..."
-            ALL_GROUPS=$(aws deploy list-deployment-groups \
+          if [ -n "$CODE_DEPLOY_GROUP_NAME" ]; then
+            echo "Using provided CodeDeploy Deployment Group Name: $CODE_DEPLOY_GROUP_NAME"
+            GROUP_NAME_CHECK=$(aws deploy get-deployment-group \
               --region "${{ inputs.aws_region }}" \
               --application-name "$APP_NAME" \
-              --query "deploymentGroups" \
+              --deployment-group-name "$CODE_DEPLOY_GROUP_NAME" \
+              --query "deploymentGroupInfo.deploymentGroupName" \
+              --output text 2>/dev/null || echo "")
+
+            if [ -z "$GROUP_NAME_CHECK" ] || [ "$GROUP_NAME_CHECK" = "None" ]; then
+              echo "Error: Provided CodeDeploy Deployment Group Name '$CODE_DEPLOY_GROUP_NAME' was not found for application $APP_NAME in region ${{ inputs.aws_region }}."
+              exit 1
+            fi
+
+            GROUP_NAME="$CODE_DEPLOY_GROUP_NAME"
+          else
+            echo "Resolving CodeDeploy deployment group from tag..."
+            echo "Deployment Group Tag (Name): $CODE_DEPLOY_GROUP_TAG"
+
+            if [ -z "$CODE_DEPLOY_GROUP_TAG" ]; then
+              echo "Error: code_deploy_group_tag must be provided when code_deploy_group_name is not set."
+              exit 1
+            fi
+
+            echo "Finding CodeDeploy Deployment Group for application $APP_NAME with tag Name=$CODE_DEPLOY_GROUP_TAG..."
+            GROUP_ARN=$(aws resourcegroupstaggingapi get-resources \
+              --region "${{ inputs.aws_region }}" \
+              --resource-type-filters "codedeploy:deploymentgroup" \
+              --tag-filters "Key=Name,Values=$CODE_DEPLOY_GROUP_TAG" \
+              --query "ResourceTagMappingList[0].ResourceARN" \
               --output text)
 
-            ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-            for GROUP in $ALL_GROUPS; do
-              TAG_VAL=$(aws deploy list-tags-for-resource \
+            if [ -n "$GROUP_ARN" ] && [ "$GROUP_ARN" != "None" ]; then
+              GROUP_NAME=$(echo "$GROUP_ARN" | awk -F'/' '{print $2}')
+            else
+              echo "Searching deployment groups for application $APP_NAME..."
+              ALL_GROUPS=$(aws deploy list-deployment-groups \
                 --region "${{ inputs.aws_region }}" \
-                --resource-arn "arn:aws:codedeploy:${{ inputs.aws_region }}:$ACCOUNT_ID:deploymentgroup:$APP_NAME/$GROUP" \
-                --query "Tags[?Key=='Name'].Value" \
-                --output text 2>/dev/null || echo "")
-              if [ "$TAG_VAL" = "$CODE_DEPLOY_GROUP_TAG" ]; then
-                GROUP_NAME="$GROUP"
-                break
-              fi
-            done
-          fi
+                --application-name "$APP_NAME" \
+                --query "deploymentGroups" \
+                --output text)
 
-          if [ -z "$GROUP_NAME" ]; then
-            echo "Error: Could not find CodeDeploy Deployment Group with tag Name=$CODE_DEPLOY_GROUP_TAG for application $APP_NAME in region ${{ inputs.aws_region }}."
-            exit 1
+              ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+              for GROUP in $ALL_GROUPS; do
+                TAG_VAL=$(aws deploy list-tags-for-resource \
+                  --region "${{ inputs.aws_region }}" \
+                  --resource-arn "arn:aws:codedeploy:${{ inputs.aws_region }}:$ACCOUNT_ID:deploymentgroup:$APP_NAME/$GROUP" \
+                  --query "Tags[?Key=='Name'].Value" \
+                  --output text 2>/dev/null || echo "")
+                if [ "$TAG_VAL" = "$CODE_DEPLOY_GROUP_TAG" ]; then
+                  GROUP_NAME="$GROUP"
+                  break
+                fi
+              done
+            fi
+
+            if [ -z "$GROUP_NAME" ]; then
+              echo "Error: Could not find CodeDeploy Deployment Group with tag Name=$CODE_DEPLOY_GROUP_TAG for application $APP_NAME in region ${{ inputs.aws_region }}."
+              exit 1
+            fi
           fi
 
           echo "Found Deployment Group Name: $GROUP_NAME"
