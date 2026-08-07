@@ -80,7 +80,7 @@ jobs:
             APP_NAME_CHECK=$(aws deploy get-application \
               --region "${{ inputs.aws_region }}" \
               --application-name "$CODE_DEPLOY_APP_NAME" \
-              --query "application.name" \
+              --query "application.applicationName" \
               --output text 2>/dev/null || echo "")
 
             if [ -z "$APP_NAME_CHECK" ] || [ "$APP_NAME_CHECK" = "None" ]; then
