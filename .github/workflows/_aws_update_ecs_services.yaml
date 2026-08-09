@@ -105,10 +105,14 @@ jobs:
             # 2. Render new task definition
             jq 'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy, .deregisteredAt)' "$SERVICE_TMP/current-task-def.json" > "$SERVICE_TMP/temp-task-def.json"
 
+            if [ -z "$IMAGE_TAG" ]; then
+              echo "::warning::IMAGE_TAG is empty for service $SERVICE; reusing existing image tags for containers: $CONTAINERS"
+            fi
+
             jq --arg tag "$IMAGE_TAG" --arg containers "$CONTAINERS" '
               ($containers | split(",")) as $target_containers |
               .containerDefinitions |= map(
-                if .name | IN($target_containers[]) then
+                if (.name | IN($target_containers[])) and ($tag != "") then
                   .image |= (split(":") | .[0] + ":" + $tag)
                 else
                   .
