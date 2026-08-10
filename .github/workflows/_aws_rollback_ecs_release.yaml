@@ -1,0 +1,182 @@
+name: Rollback ECS Release
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: 'The environment being deployed to'
+        required: true
+        type: string
+      aws_region:
+        description: 'The AWS region of the cluster'
+        required: true
+        type: string
+      ecs_cluster:
+        description: 'The ECS cluster'
+        required: true
+        type: string
+      ecs_services:
+        description: 'JSON stringified array of ECS services to rollback'
+        required: true
+        type: string
+      rollback_task_definition_arns:
+        description: 'Optional JSON object map of service->taskDefinitionArn to rollback to. If not provided for a service, rollback_revisions is used to resolve the target revision.'
+        required: false
+        type: string
+        default: '{}'
+      rollback_revisions:
+        description: 'Number of task definition revisions to roll back when rollback_task_definition_arns is not provided for a service.'
+        required: false
+        type: number
+        default: 1
+      wait_for_stable:
+        description: 'Whether to wait for ECS services to become stable after rollback'
+        required: false
+        type: boolean
+        default: true
+    outputs:
+      rolled_back_task_definition_arns:
+        description: 'JSON stringified object map of service->rolled back task definition ARN'
+        value: ${{ jobs.rollback.outputs.rolled_back_task_definition_arns }}
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  rollback:
+    runs-on: ${{ vars.DEFAULT_RUNNER }}
+    environment: ${{ inputs.environment }}
+    outputs:
+      rolled_back_task_definition_arns: ${{ steps.rollback-services.outputs.rolled_back_task_definition_arns }}
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-region: ${{ inputs.aws_region }}
+          role-to-assume: ${{ secrets.AWS_ROLE }}
+
+      - name: Rollback ECS Services
+        id: rollback-services
+        run: |
+          SERVICES_JSON='${{ inputs.ecs_services }}'
+          ROLLBACK_MAP_JSON='${{ inputs.rollback_task_definition_arns }}'
+          ROLLBACK_REVISIONS='${{ inputs.rollback_revisions }}'
+          CLUSTER='${{ inputs.ecs_cluster }}'
+          WAIT_FOR_STABLE='${{ inputs.wait_for_stable }}'
+
+          if ! echo "$SERVICES_JSON" | jq -e 'type == "array"' >/dev/null 2>&1; then
+            echo "Error: ecs_services must be a valid JSON array."
+            exit 1
+          fi
+
+          if ! echo "$ROLLBACK_MAP_JSON" | jq -e 'type == "object"' >/dev/null 2>&1; then
+            echo "Error: rollback_task_definition_arns must be a valid JSON object map."
+            exit 1
+          fi
+
+          if ! echo "$ROLLBACK_REVISIONS" | grep -Eq '^[0-9]+$'; then
+            echo "Error: rollback_revisions must be a positive integer."
+            exit 1
+          fi
+
+          if [ "$ROLLBACK_REVISIONS" -lt 1 ]; then
+            echo "Error: rollback_revisions must be greater than or equal to 1."
+            exit 1
+          fi
+
+          TMP_DIR=$(mktemp -d)
+          OUTPUT_FILE="$TMP_DIR/rollback_outputs.txt"
+          touch "$OUTPUT_FILE"
+
+          rollback_single_service() {
+            local SERVICE="$1"
+
+            echo "=== Rolling back service: $SERVICE ==="
+
+            TARGET_TASK_DEF=$(echo "$ROLLBACK_MAP_JSON" | jq -r --arg svc "$SERVICE" '.[$svc] // empty')
+
+            CURRENT_TASK_DEF=$(aws ecs describe-services \
+              --cluster "$CLUSTER" \
+              --services "$SERVICE" \
+              --query 'services[0].taskDefinition' \
+              --output text)
+
+            if [ -z "$CURRENT_TASK_DEF" ] || [ "$CURRENT_TASK_DEF" = "None" ]; then
+              echo "Error: Could not retrieve current task definition for service $SERVICE"
+              return 1
+            fi
+
+            if [ -z "$TARGET_TASK_DEF" ]; then
+              FAMILY_NAME=$(echo "$CURRENT_TASK_DEF" | awk -F'/' '{print $2}' | cut -d':' -f1)
+              if [ -z "$FAMILY_NAME" ]; then
+                echo "Error: Could not resolve task definition family from $CURRENT_TASK_DEF"
+                return 1
+              fi
+
+              TASK_DEFS_JSON=$(aws ecs list-task-definitions \
+                --family-prefix "$FAMILY_NAME" \
+                --status ACTIVE \
+                --sort DESC \
+                --query 'taskDefinitionArns' \
+                --output json)
+
+              TARGET_TASK_DEF=$(echo "$TASK_DEFS_JSON" | jq -r --arg current "$CURRENT_TASK_DEF" --argjson steps "$ROLLBACK_REVISIONS" '
+                . as $defs |
+                (index($current)) as $idx |
+                if $idx == null then
+                  (if ($defs | length) > $steps then $defs[$steps] else empty end)
+                else
+                  (if ($defs | length) > ($idx + $steps) then $defs[$idx + $steps] else empty end)
+                end
+              ')
+
+              if [ -z "$TARGET_TASK_DEF" ]; then
+                echo "Error: Could not resolve rollback target for service $SERVICE using rollback_revisions=$ROLLBACK_REVISIONS (current: $CURRENT_TASK_DEF)."
+                return 1
+              fi
+
+              echo "Auto-resolved rollback target for $SERVICE using rollback_revisions=$ROLLBACK_REVISIONS: $TARGET_TASK_DEF"
+            else
+              echo "Using provided rollback target for $SERVICE: $TARGET_TASK_DEF"
+            fi
+
+            if [ "$TARGET_TASK_DEF" = "$CURRENT_TASK_DEF" ]; then
+              echo "Service $SERVICE is already on target task definition; skipping update."
+              echo "$SERVICE=$TARGET_TASK_DEF" >> "$OUTPUT_FILE"
+              return 0
+            fi
+
+            aws ecs update-service \
+              --cluster "$CLUSTER" \
+              --service "$SERVICE" \
+              --task-definition "$TARGET_TASK_DEF"
+
+            if [ "$WAIT_FOR_STABLE" = "true" ]; then
+              echo "Waiting for service $SERVICE to become stable..."
+              aws ecs wait services-stable \
+                --cluster "$CLUSTER" \
+                --services "$SERVICE"
+              echo "Service $SERVICE is stable."
+            fi
+
+            echo "$SERVICE=$TARGET_TASK_DEF" >> "$OUTPUT_FILE"
+          }
+
+          FAILURES=0
+          for SERVICE in $(echo "$SERVICES_JSON" | jq -r '.[]'); do
+            rollback_single_service "$SERVICE" || FAILURES=$((FAILURES + 1))
+          done
+
+          if [ $FAILURES -gt 0 ]; then
+            echo "Error: $FAILURES service rollback(s) failed."
+            exit 1
+          fi
+
+          ROLLED_BACK_JSON="{}"
+          if [ -s "$OUTPUT_FILE" ]; then
+            ROLLED_BACK_JSON=$(jq -n -R '[inputs | split("=")] | map({key: .[0], value: .[1]}) | from_entries' "$OUTPUT_FILE")
+          fi
+
+          COMPACT_ROLLED_BACK=$(echo "$ROLLED_BACK_JSON" | jq -c '.')
+          echo "rolled_back_task_definition_arns=$COMPACT_ROLLED_BACK" >> $GITHUB_OUTPUT
