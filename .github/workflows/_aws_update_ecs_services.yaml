@@ -37,6 +37,11 @@ on:
         required: false
         type: boolean
         default: true
+      skip_definition_update:
+        description: 'Skip registering a new task definition and force a new deployment with the existing one'
+        required: false
+        type: boolean
+        default: false
       wait_for_stable:
         description: 'Whether to wait for the ECS service to become stable'
         required: false
@@ -73,6 +78,7 @@ jobs:
           CONTAINERS="${{ inputs.container_update_tag }}"
           CLUSTER="${{ inputs.ecs_cluster }}"
           UPDATE_SERVICE="${{ inputs.update_service }}"
+          SKIP_DEF_UPDATE="${{ inputs.skip_definition_update }}"
           WAIT_FOR_STABLE="${{ inputs.wait_for_stable }}"
 
           # Prepare temporary working directory
@@ -102,37 +108,45 @@ jobs:
 
             aws ecs describe-task-definition --task-definition "$TASK_DEF_ARN" --query taskDefinition > "$SERVICE_TMP/current-task-def.json"
 
-            # 2. Render new task definition
-            jq 'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy, .deregisteredAt)' "$SERVICE_TMP/current-task-def.json" > "$SERVICE_TMP/temp-task-def.json"
+            if [ "$SKIP_DEF_UPDATE" = "true" ]; then
+              echo "Skipping task definition update for $SERVICE; reusing existing: $TASK_DEF_ARN"
+              NEW_REVISION="$TASK_DEF_ARN"
+            else
+              # 2. Render new task definition
+              jq 'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy, .deregisteredAt)' "$SERVICE_TMP/current-task-def.json" > "$SERVICE_TMP/temp-task-def.json"
 
-            if [ -z "$IMAGE_TAG" ]; then
-              echo "::warning::IMAGE_TAG is empty for service $SERVICE; reusing existing image tags for containers: $CONTAINERS"
+              if [ -z "$IMAGE_TAG" ]; then
+                echo "::warning::IMAGE_TAG is empty for service $SERVICE; reusing existing image tags for containers: $CONTAINERS"
+              fi
+
+              jq --arg tag "$IMAGE_TAG" --arg containers "$CONTAINERS" '
+                ($containers | split(",")) as $target_containers |
+                .containerDefinitions |= map(
+                  if (.name | IN($target_containers[])) and ($tag != "") then
+                    .image |= (split(":") | .[0] + ":" + $tag)
+                  else
+                    .
+                  end
+                )
+              ' "$SERVICE_TMP/temp-task-def.json" > "$SERVICE_TMP/task-definition.json"
+
+              # 3. Register new task definition
+              NEW_TASK_DEF=$(aws ecs register-task-definition --cli-input-json file://"$SERVICE_TMP/task-definition.json")
+              NEW_REVISION=$(echo "$NEW_TASK_DEF" | jq -r '.taskDefinition.taskDefinitionArn')
+              echo "Registered new task definition for $SERVICE: $NEW_REVISION"
             fi
-
-            jq --arg tag "$IMAGE_TAG" --arg containers "$CONTAINERS" '
-              ($containers | split(",")) as $target_containers |
-              .containerDefinitions |= map(
-                if (.name | IN($target_containers[])) and ($tag != "") then
-                  .image |= (split(":") | .[0] + ":" + $tag)
-                else
-                  .
-                end
-              )
-            ' "$SERVICE_TMP/temp-task-def.json" > "$SERVICE_TMP/task-definition.json"
-
-            # 3. Register new task definition
-            NEW_TASK_DEF=$(aws ecs register-task-definition --cli-input-json file://"$SERVICE_TMP/task-definition.json")
-            NEW_REVISION=$(echo "$NEW_TASK_DEF" | jq -r '.taskDefinition.taskDefinitionArn')
-            echo "Registered new task definition for $SERVICE: $NEW_REVISION"
             echo "$SERVICE=$NEW_REVISION" >> "$TMP_DIR/task_def_outputs.txt"
 
             # 4. Update service if enabled and not excluded
             if [ "$UPDATE_SERVICE" = "true" ] && [ "$IS_EXCLUDED" = "false" ]; then
               echo "Updating service $SERVICE..."
+              FORCE_FLAG=""
+              [ "$SKIP_DEF_UPDATE" = "true" ] && FORCE_FLAG="--force-new-deployment"
               aws ecs update-service \
                 --cluster "$CLUSTER" \
                 --service "$SERVICE" \
-                --task-definition "$NEW_REVISION"
+                --task-definition "$NEW_REVISION" \
+                $FORCE_FLAG
 
               if [ "$WAIT_FOR_STABLE" = "true" ]; then
                 echo "Waiting for service $SERVICE to become stable..."
