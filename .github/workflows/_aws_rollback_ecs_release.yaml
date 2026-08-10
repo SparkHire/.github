@@ -7,18 +7,39 @@ on:
         description: 'The environment being deployed to'
         required: true
         type: string
+      aws_account_id:
+        description: 'The AWS account ID of the cluster'
+        required: true
+        type: string
       aws_region:
         description: 'The AWS region of the cluster'
         required: true
         type: string
       ecs_cluster:
-        description: 'The ECS cluster'
-        required: true
+        description: 'The ECS cluster name or ARN to rollback (optional if ecs_cluster_name_tag is provided). Supports {aws_region}, {region}, and {environment} template replacements. If a plain name is provided, the full ARN will be constructed using aws_account_id and aws_region.'
+        required: false
         type: string
-      ecs_services:
-        description: 'JSON stringified array of ECS services to rollback'
-        required: true
+      ecs_cluster_name_tag:
+        description: 'The ECS cluster Name tag to search for (optional if ecs_cluster is provided). Supports {region} and {environment} template replacements.'
+        required: false
         type: string
+      exclude_tag_key:
+        description: 'The tag key used to filter out services (e.g. ExcludeFromRelease)'
+        required: false
+        type: string
+      exclude_tag_value:
+        description: 'The tag value used to filter out services (e.g. true)'
+        required: false
+        type: string
+      always_exclude_tag_key:
+        description: 'The tag key used to always filter out services (e.g. AlwaysExcludeFromRelease)'
+        required: false
+        type: string
+      force_release:
+        description: 'Force rollback even if the service is marked with the ExcludeFromRelease tag'
+        required: false
+        type: string
+        default: 'No'
       rollback_task_definition_arns:
         description: 'Optional JSON object map of service->taskDefinitionArn to rollback to. If not provided for a service, rollback_revisions is used to resolve the target revision.'
         required: false
@@ -44,7 +65,23 @@ permissions:
   contents: read
 
 jobs:
+  get-services:
+    uses: ./.github/workflows/_aws_get_ecs_services.yaml
+    with:
+      environment: ${{ inputs.environment }}
+      aws_account_id: ${{ inputs.aws_account_id }}
+      aws_region: ${{ inputs.aws_region }}
+      ecs_cluster: ${{ inputs.ecs_cluster }}
+      ecs_cluster_name_tag: ${{ inputs.ecs_cluster_name_tag }}
+      exclude_tag_key: ${{ inputs.exclude_tag_key }}
+      exclude_tag_value: ${{ inputs.exclude_tag_value }}
+      always_exclude_tag_key: ${{ inputs.always_exclude_tag_key }}
+      force_release: ${{ inputs.force_release }}
+    secrets: inherit
+
   rollback:
+    needs: get-services
+    if: ${{ needs.get-services.outputs.services != '[]' && needs.get-services.outputs.services != '' }}
     runs-on: ${{ vars.DEFAULT_RUNNER }}
     environment: ${{ inputs.environment }}
     outputs:
@@ -59,10 +96,11 @@ jobs:
       - name: Rollback ECS Services
         id: rollback-services
         run: |
-          SERVICES_JSON='${{ inputs.ecs_services }}'
+          SERVICES_JSON='${{ needs.get-services.outputs.services }}'
+          EXCLUDED_JSON='${{ needs.get-services.outputs.excluded_services }}'
           ROLLBACK_MAP_JSON='${{ inputs.rollback_task_definition_arns }}'
           ROLLBACK_REVISIONS='${{ inputs.rollback_revisions }}'
-          CLUSTER='${{ inputs.ecs_cluster }}'
+          CLUSTER='${{ needs.get-services.outputs.resolved_cluster }}'
           WAIT_FOR_STABLE='${{ inputs.wait_for_stable }}'
 
           if ! echo "$SERVICES_JSON" | jq -e 'type == "array"' >/dev/null 2>&1; then
@@ -93,6 +131,16 @@ jobs:
             local SERVICE="$1"
 
             echo "=== Rolling back service: $SERVICE ==="
+
+            IS_EXCLUDED=false
+            if echo "$EXCLUDED_JSON" | jq -e --arg svc "$SERVICE" '. | contains([$svc])' >/dev/null 2>&1; then
+              IS_EXCLUDED=true
+            fi
+
+            if [ "$IS_EXCLUDED" = "true" ]; then
+              echo "Skipping rollback for service $SERVICE due to exclusion filters."
+              return 0
+            fi
 
             TARGET_TASK_DEF=$(echo "$ROLLBACK_MAP_JSON" | jq -r --arg svc "$SERVICE" '.[$svc] // empty')
 
