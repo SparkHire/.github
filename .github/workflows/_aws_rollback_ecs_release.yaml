@@ -60,6 +60,14 @@ on:
         required: false
         type: string
         default: 'ecs'
+      code_deploy_app_name:
+        description: 'The CodeDeploy application name when deployment_controller=codedeploy. Supports {aws_region} and {region} template replacements.'
+        required: false
+        type: string
+      code_deploy_group_name:
+        description: 'The CodeDeploy deployment group name when deployment_controller=codedeploy. Supports {aws_region} and {region} template replacements.'
+        required: false
+        type: string
       code_deploy_s3_bucket:
         description: 'S3 bucket for AppSpec files when deployment_controller=codedeploy. Supports {aws_region} and {region} template replacements.'
         required: false
@@ -117,6 +125,8 @@ jobs:
           CLUSTER='${{ needs.get-services.outputs.resolved_cluster }}'
           WAIT_FOR_STABLE='${{ inputs.wait_for_stable }}'
           DEPLOYMENT_CONTROLLER='${{ inputs.deployment_controller }}'
+          CODE_DEPLOY_APP_NAME=$(echo '${{ inputs.code_deploy_app_name }}' | sed 's/{aws_region}/${{ inputs.aws_region }}/g' | sed 's/{region}/${{ inputs.aws_region }}/g')
+          CODE_DEPLOY_GROUP_NAME=$(echo '${{ inputs.code_deploy_group_name }}' | sed 's/{aws_region}/${{ inputs.aws_region }}/g' | sed 's/{region}/${{ inputs.aws_region }}/g')
           CODE_DEPLOY_S3_BUCKET=$(echo '${{ inputs.code_deploy_s3_bucket }}' | sed 's/{aws_region}/${{ inputs.aws_region }}/g' | sed 's/{region}/${{ inputs.aws_region }}/g')
           CODE_DEPLOY_S3_KEY_PREFIX='${{ inputs.code_deploy_s3_key_prefix }}'
 
@@ -148,6 +158,41 @@ jobs:
           if [ "$DEPLOYMENT_CONTROLLER" = "codedeploy" ] && [ -z "$CODE_DEPLOY_S3_BUCKET" ]; then
             echo "Error: code_deploy_s3_bucket is required when deployment_controller=codedeploy."
             exit 1
+          fi
+
+          if [ "$DEPLOYMENT_CONTROLLER" = "codedeploy" ] && [ -z "$CODE_DEPLOY_APP_NAME" ]; then
+            echo "Error: code_deploy_app_name is required when deployment_controller=codedeploy."
+            exit 1
+          fi
+
+          if [ "$DEPLOYMENT_CONTROLLER" = "codedeploy" ] && [ -z "$CODE_DEPLOY_GROUP_NAME" ]; then
+            echo "Error: code_deploy_group_name is required when deployment_controller=codedeploy."
+            exit 1
+          fi
+
+          if [ "$DEPLOYMENT_CONTROLLER" = "codedeploy" ]; then
+            APP_NAME_CHECK=$(aws deploy get-application \
+              --region "${{ inputs.aws_region }}" \
+              --application-name "$CODE_DEPLOY_APP_NAME" \
+              --query 'application.applicationName' \
+              --output text 2>/dev/null || echo "")
+
+            if [ -z "$APP_NAME_CHECK" ] || [ "$APP_NAME_CHECK" = "None" ]; then
+              echo "Error: Provided CodeDeploy application '$CODE_DEPLOY_APP_NAME' was not found in region ${{ inputs.aws_region }}."
+              exit 1
+            fi
+
+            GROUP_NAME_CHECK=$(aws deploy get-deployment-group \
+              --region "${{ inputs.aws_region }}" \
+              --application-name "$CODE_DEPLOY_APP_NAME" \
+              --deployment-group-name "$CODE_DEPLOY_GROUP_NAME" \
+              --query 'deploymentGroupInfo.deploymentGroupName' \
+              --output text 2>/dev/null || echo "")
+
+            if [ -z "$GROUP_NAME_CHECK" ] || [ "$GROUP_NAME_CHECK" = "None" ]; then
+              echo "Error: Provided CodeDeploy deployment group '$CODE_DEPLOY_GROUP_NAME' was not found for application '$CODE_DEPLOY_APP_NAME' in region ${{ inputs.aws_region }}."
+              exit 1
+            fi
           fi
 
           TMP_DIR=$(mktemp -d)
@@ -239,38 +284,15 @@ jobs:
                 return 1
               fi
 
-              APP_NAME=""
-              GROUP_NAME=""
-              ALL_APPS=$(aws deploy list-applications \
+              MATCHES_SERVICE=$(aws deploy get-deployment-group \
                 --region "${{ inputs.aws_region }}" \
-                --query 'applications' \
-                --output text)
+                --application-name "$CODE_DEPLOY_APP_NAME" \
+                --deployment-group-name "$CODE_DEPLOY_GROUP_NAME" \
+                --query "length(deploymentGroupInfo.ecsServices[?clusterName=='$CLUSTER' && serviceName=='$SERVICE'])" \
+                --output text 2>/dev/null || echo "0")
 
-              for APP in $ALL_APPS; do
-                ALL_GROUPS=$(aws deploy list-deployment-groups \
-                  --region "${{ inputs.aws_region }}" \
-                  --application-name "$APP" \
-                  --query 'deploymentGroups' \
-                  --output text 2>/dev/null || true)
-
-                for GROUP in $ALL_GROUPS; do
-                  MATCHES_SERVICE=$(aws deploy get-deployment-group \
-                    --region "${{ inputs.aws_region }}" \
-                    --application-name "$APP" \
-                    --deployment-group-name "$GROUP" \
-                    --query "length(deploymentGroupInfo.ecsServices[?clusterName=='$CLUSTER' && serviceName=='$SERVICE'])" \
-                    --output text 2>/dev/null || echo "0")
-
-                  if [ "$MATCHES_SERVICE" != "0" ]; then
-                    APP_NAME="$APP"
-                    GROUP_NAME="$GROUP"
-                    break 2
-                  fi
-                done
-              done
-
-              if [ -z "$APP_NAME" ] || [ -z "$GROUP_NAME" ]; then
-                echo "Error: Could not find CodeDeploy ECS deployment group for service $SERVICE in cluster $CLUSTER."
+              if [ "$MATCHES_SERVICE" = "0" ]; then
+                echo "Error: CodeDeploy deployment group '$CODE_DEPLOY_GROUP_NAME' in app '$CODE_DEPLOY_APP_NAME' is not mapped to service $SERVICE in cluster $CLUSTER."
                 return 1
               fi
 
@@ -304,8 +326,8 @@ jobs:
 
               DEPLOYMENT_ID=$(aws deploy create-deployment \
                 --region "${{ inputs.aws_region }}" \
-                --application-name "$APP_NAME" \
-                --deployment-group-name "$GROUP_NAME" \
+                --application-name "$CODE_DEPLOY_APP_NAME" \
+                --deployment-group-name "$CODE_DEPLOY_GROUP_NAME" \
                 --revision "{\"revisionType\": \"S3\", \"s3Location\": {\"bucket\": \"$CODE_DEPLOY_S3_BUCKET\", \"key\": \"$S3_KEY\", \"bundleType\": \"JSON\"}}" \
                 --query 'deploymentId' \
                 --output text)
