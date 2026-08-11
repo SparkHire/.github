@@ -55,6 +55,20 @@ on:
         required: false
         type: boolean
         default: true
+      deployment_controller:
+        description: 'Rollback strategy: ecs (direct ECS update-service) or codedeploy (ECS blue/green via CodeDeploy)'
+        required: false
+        type: string
+        default: 'ecs'
+      code_deploy_s3_bucket:
+        description: 'S3 bucket for AppSpec files when deployment_controller=codedeploy. Supports {aws_region} and {region} template replacements.'
+        required: false
+        type: string
+      code_deploy_s3_key_prefix:
+        description: 'S3 key prefix for AppSpec files when deployment_controller=codedeploy.'
+        required: false
+        type: string
+        default: 'github/'
     outputs:
       rolled_back_task_definition_arns:
         description: 'JSON stringified object map of service->rolled back task definition ARN'
@@ -102,6 +116,9 @@ jobs:
           ROLLBACK_REVISIONS='${{ inputs.rollback_revisions }}'
           CLUSTER='${{ needs.get-services.outputs.resolved_cluster }}'
           WAIT_FOR_STABLE='${{ inputs.wait_for_stable }}'
+          DEPLOYMENT_CONTROLLER='${{ inputs.deployment_controller }}'
+          CODE_DEPLOY_S3_BUCKET=$(echo '${{ inputs.code_deploy_s3_bucket }}' | sed 's/{aws_region}/${{ inputs.aws_region }}/g' | sed 's/{region}/${{ inputs.aws_region }}/g')
+          CODE_DEPLOY_S3_KEY_PREFIX='${{ inputs.code_deploy_s3_key_prefix }}'
 
           if ! echo "$SERVICES_JSON" | jq -e 'type == "array"' >/dev/null 2>&1; then
             echo "Error: ecs_services must be a valid JSON array."
@@ -120,6 +137,16 @@ jobs:
 
           if [ "$ROLLBACK_REVISIONS" -lt 1 ]; then
             echo "Error: rollback_revisions must be greater than or equal to 1."
+            exit 1
+          fi
+
+          if [ "$DEPLOYMENT_CONTROLLER" != "ecs" ] && [ "$DEPLOYMENT_CONTROLLER" != "codedeploy" ]; then
+            echo "Error: deployment_controller must be either 'ecs' or 'codedeploy'."
+            exit 1
+          fi
+
+          if [ "$DEPLOYMENT_CONTROLLER" = "codedeploy" ] && [ -z "$CODE_DEPLOY_S3_BUCKET" ]; then
+            echo "Error: code_deploy_s3_bucket is required when deployment_controller=codedeploy."
             exit 1
           fi
 
@@ -195,17 +222,120 @@ jobs:
               return 0
             fi
 
-            aws ecs update-service \
-              --cluster "$CLUSTER" \
-              --service "$SERVICE" \
-              --task-definition "$TARGET_TASK_DEF"
+            if [ "$DEPLOYMENT_CONTROLLER" = "codedeploy" ]; then
+              echo "Rolling back service $SERVICE via CodeDeploy blue/green..."
 
-            if [ "$WAIT_FOR_STABLE" = "true" ]; then
-              echo "Waiting for service $SERVICE to become stable..."
-              aws ecs wait services-stable \
+              SERVICE_DESC_JSON=$(aws ecs describe-services \
                 --cluster "$CLUSTER" \
-                --services "$SERVICE"
-              echo "Service $SERVICE is stable."
+                --services "$SERVICE" \
+                --query 'services[0]' \
+                --output json)
+
+              CONTAINER_NAME=$(echo "$SERVICE_DESC_JSON" | jq -r '.loadBalancers[0].containerName // empty')
+              CONTAINER_PORT=$(echo "$SERVICE_DESC_JSON" | jq -r '.loadBalancers[0].containerPort // empty')
+
+              if [ -z "$CONTAINER_NAME" ] || [ -z "$CONTAINER_PORT" ]; then
+                echo "Error: Could not resolve load balancer container mapping for service $SERVICE required by CodeDeploy AppSpec."
+                return 1
+              fi
+
+              APP_NAME=""
+              GROUP_NAME=""
+              ALL_APPS=$(aws deploy list-applications \
+                --region "${{ inputs.aws_region }}" \
+                --query 'applications' \
+                --output text)
+
+              for APP in $ALL_APPS; do
+                ALL_GROUPS=$(aws deploy list-deployment-groups \
+                  --region "${{ inputs.aws_region }}" \
+                  --application-name "$APP" \
+                  --query 'deploymentGroups' \
+                  --output text 2>/dev/null || true)
+
+                for GROUP in $ALL_GROUPS; do
+                  MATCHES_SERVICE=$(aws deploy get-deployment-group \
+                    --region "${{ inputs.aws_region }}" \
+                    --application-name "$APP" \
+                    --deployment-group-name "$GROUP" \
+                    --query "length(deploymentGroupInfo.ecsServices[?clusterName=='$CLUSTER' && serviceName=='$SERVICE'])" \
+                    --output text 2>/dev/null || echo "0")
+
+                  if [ "$MATCHES_SERVICE" != "0" ]; then
+                    APP_NAME="$APP"
+                    GROUP_NAME="$GROUP"
+                    break 2
+                  fi
+                done
+              done
+
+              if [ -z "$APP_NAME" ] || [ -z "$GROUP_NAME" ]; then
+                echo "Error: Could not find CodeDeploy ECS deployment group for service $SERVICE in cluster $CLUSTER."
+                return 1
+              fi
+
+              SERVICE_SAFE=$(echo "$SERVICE" | tr '/:' '__')
+              APPSPEC_FILE="$TMP_DIR/appspec-$SERVICE_SAFE.json"
+              S3_KEY="${CODE_DEPLOY_S3_KEY_PREFIX}rollback/${{ github.run_id }}/${SERVICE_SAFE}-${{ github.run_attempt }}.json"
+
+              jq -n \
+                --arg taskDef "$TARGET_TASK_DEF" \
+                --arg containerName "$CONTAINER_NAME" \
+                --argjson containerPort "$CONTAINER_PORT" \
+                '{
+                  version: "0.0",
+                  Resources: [
+                    {
+                      TargetService: {
+                        Type: "AWS::ECS::Service",
+                        Properties: {
+                          TaskDefinition: $taskDef,
+                          LoadBalancerInfo: {
+                            ContainerName: $containerName,
+                            ContainerPort: $containerPort
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }' > "$APPSPEC_FILE"
+
+              aws s3 cp "$APPSPEC_FILE" "s3://$CODE_DEPLOY_S3_BUCKET/$S3_KEY"
+
+              DEPLOYMENT_ID=$(aws deploy create-deployment \
+                --region "${{ inputs.aws_region }}" \
+                --application-name "$APP_NAME" \
+                --deployment-group-name "$GROUP_NAME" \
+                --revision "{\"revisionType\": \"S3\", \"s3Location\": {\"bucket\": \"$CODE_DEPLOY_S3_BUCKET\", \"key\": \"$S3_KEY\", \"bundleType\": \"JSON\"}}" \
+                --query 'deploymentId' \
+                --output text)
+
+              if [ -z "$DEPLOYMENT_ID" ] || [ "$DEPLOYMENT_ID" = "None" ]; then
+                echo "Error: Failed to create CodeDeploy rollback deployment for service $SERVICE."
+                return 1
+              fi
+
+              echo "Created CodeDeploy rollback deployment for $SERVICE: $DEPLOYMENT_ID"
+
+              if [ "$WAIT_FOR_STABLE" = "true" ]; then
+                aws deploy wait deployment-successful \
+                  --region "${{ inputs.aws_region }}" \
+                  --deployment-id "$DEPLOYMENT_ID"
+                echo "CodeDeploy deployment $DEPLOYMENT_ID for service $SERVICE succeeded."
+              fi
+            else
+              aws ecs update-service \
+                --cluster "$CLUSTER" \
+                --service "$SERVICE" \
+                --task-definition "$TARGET_TASK_DEF"
+
+              if [ "$WAIT_FOR_STABLE" = "true" ]; then
+                echo "Waiting for service $SERVICE to become stable..."
+                aws ecs wait services-stable \
+                  --cluster "$CLUSTER" \
+                  --services "$SERVICE"
+                echo "Service $SERVICE is stable."
+              fi
             fi
 
             echo "$SERVICE=$TARGET_TASK_DEF" >> "$OUTPUT_FILE"
