@@ -211,9 +211,15 @@ jobs:
             echo "$SERVICE=$TARGET_TASK_DEF" >> "$OUTPUT_FILE"
           }
 
-          FAILURES=0
+          PIDS=()
           for SERVICE in $(echo "$SERVICES_JSON" | jq -r '.[]'); do
-            rollback_single_service "$SERVICE" || FAILURES=$((FAILURES + 1))
+            rollback_single_service "$SERVICE" &
+            PIDS+=($!)
+          done
+
+          FAILURES=0
+          for PID in "${PIDS[@]}"; do
+            wait "$PID" || FAILURES=$((FAILURES + 1))
           done
 
           if [ $FAILURES -gt 0 ]; then
