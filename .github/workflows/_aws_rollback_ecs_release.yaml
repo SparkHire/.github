@@ -135,6 +135,8 @@ jobs:
             exit 1
           fi
 
+          SERVICE_COUNT=$(echo "$SERVICES_JSON" | jq -r 'length')
+
           if ! echo "$ROLLBACK_MAP_JSON" | jq -e 'type == "object"' >/dev/null 2>&1; then
             echo "Error: rollback_task_definition_arns must be a valid JSON object map."
             exit 1
@@ -170,6 +172,12 @@ jobs:
             exit 1
           fi
 
+          if [ "$DEPLOYMENT_CONTROLLER" = "codedeploy" ] && [ "$SERVICE_COUNT" -ne 1 ]; then
+            echo "Error: deployment_controller=codedeploy requires exactly one resolved ECS service, but found $SERVICE_COUNT."
+            echo "Tip: Run one service at a time, or extend this workflow with per-service CodeDeploy app/group inputs."
+            exit 1
+          fi
+
           if [ "$DEPLOYMENT_CONTROLLER" = "codedeploy" ]; then
             APP_NAME_CHECK=$(aws deploy get-application \
               --region "${{ inputs.aws_region }}" \
@@ -196,11 +204,18 @@ jobs:
           fi
 
           TMP_DIR=$(mktemp -d)
+          RESULTS_DIR="$TMP_DIR/results"
+          mkdir -p "$RESULTS_DIR"
           OUTPUT_FILE="$TMP_DIR/rollback_outputs.txt"
           touch "$OUTPUT_FILE"
 
           rollback_single_service() {
             local SERVICE="$1"
+            local SERVICE_SAFE
+            local SERVICE_OUTPUT_FILE
+
+            SERVICE_SAFE=$(echo "$SERVICE" | tr '/:' '__')
+            SERVICE_OUTPUT_FILE="$RESULTS_DIR/out-$SERVICE_SAFE"
 
             echo "=== Rolling back service: $SERVICE ==="
 
@@ -263,7 +278,7 @@ jobs:
 
             if [ "$TARGET_TASK_DEF" = "$CURRENT_TASK_DEF" ]; then
               echo "Service $SERVICE is already on target task definition; skipping update."
-              echo "$SERVICE=$TARGET_TASK_DEF" >> "$OUTPUT_FILE"
+              printf '%s=%s\n' "$SERVICE" "$TARGET_TASK_DEF" > "$SERVICE_OUTPUT_FILE"
               return 0
             fi
 
@@ -284,7 +299,6 @@ jobs:
                 return 1
               fi
 
-              SERVICE_SAFE=$(echo "$SERVICE" | tr '/:' '__')
               APPSPEC_FILE="$TMP_DIR/appspec-$SERVICE_SAFE.json"
               S3_KEY="${CODE_DEPLOY_S3_KEY_PREFIX}rollback/${{ github.run_id }}/${SERVICE_SAFE}-${{ github.run_attempt }}.json"
 
@@ -348,7 +362,7 @@ jobs:
               fi
             fi
 
-            echo "$SERVICE=$TARGET_TASK_DEF" >> "$OUTPUT_FILE"
+            printf '%s=%s\n' "$SERVICE" "$TARGET_TASK_DEF" > "$SERVICE_OUTPUT_FILE"
           }
 
           PIDS=()
@@ -366,6 +380,8 @@ jobs:
             echo "Error: $FAILURES service rollback(s) failed."
             exit 1
           fi
+
+          cat "$RESULTS_DIR"/out-* 2>/dev/null > "$OUTPUT_FILE" || true
 
           ROLLED_BACK_JSON="{}"
           if [ -s "$OUTPUT_FILE" ]; then
