@@ -284,18 +284,6 @@ jobs:
                 return 1
               fi
 
-              # MATCHES_SERVICE=$(aws deploy get-deployment-group \
-              #   --region "${{ inputs.aws_region }}" \
-              #   --application-name "$CODE_DEPLOY_APP_NAME" \
-              #   --deployment-group-name "$CODE_DEPLOY_GROUP_NAME" \
-              #   --query "length(deploymentGroupInfo.ecsServices[?clusterName=='$CLUSTER' && serviceName=='$SERVICE'])" \
-              #   --output text 2>/dev/null || echo "0")
-
-              # if [ "$MATCHES_SERVICE" = "0" ]; then
-              #   echo "Error: CodeDeploy deployment group '$CODE_DEPLOY_GROUP_NAME' in app '$CODE_DEPLOY_APP_NAME' is not mapped to service $SERVICE in cluster $CLUSTER."
-              #   return 1
-              # fi
-
               SERVICE_SAFE=$(echo "$SERVICE" | tr '/:' '__')
               APPSPEC_FILE="$TMP_DIR/appspec-$SERVICE_SAFE.json"
               S3_KEY="${CODE_DEPLOY_S3_KEY_PREFIX}rollback/${{ github.run_id }}/${SERVICE_SAFE}-${{ github.run_attempt }}.json"
