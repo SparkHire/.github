@@ -94,10 +94,8 @@ jobs:
 
           CMD=(aws sns publish --topic-arn "$TOPIC_ARN" --message "$NOTIFICATION_MESSAGE" --subject "$NOTIFICATION_SUBJECT")
 
-          if [ -n "$NOTIFICATION_MESSAGE_ATTRIBUTES" ]; then
-            ATTR_JSON=$(python3 -c "import sys, json, yaml; data = yaml.safe_load(sys.stdin.read()) or {}; sys.exit('Message attributes must be an object') if not isinstance(data, dict) else None; formatted = {k: ({'DataType': v.get('DataType') or v.get('data_type', 'String'), **({'StringValue': str(v.get('StringValue') or v.get('string_value') or v.get('value'))} if (v.get('StringValue') or v.get('string_value') or v.get('value')) is not None else {}), **({'BinaryValue': str(v.get('BinaryValue') or v.get('binary_value'))} if (v.get('BinaryValue') or v.get('binary_value')) is not None else {})} if isinstance(v, dict) else {'DataType': 'String', 'StringValue': str(v)}) for k, v in data.items()}; print(json.dumps(formatted))" <<< "$NOTIFICATION_MESSAGE_ATTRIBUTES")
-            CMD+=(--message-attributes "$ATTR_JSON")
-          fi
+          ATTR_JSON=$(python3 -c "import sys, json, yaml; raw = sys.stdin.read().strip(); data = yaml.safe_load(raw) if raw else {}; sys.exit('Message attributes must be an object') if not isinstance(data, dict) else None; (data.update({'level': sys.argv[1]}) if not any(k.lower() == 'level' for k in data) else None); formatted = {k: ({'DataType': v.get('DataType') or v.get('data_type', 'String'), **({'StringValue': str(v.get('StringValue') or v.get('string_value') or v.get('value'))} if (v.get('StringValue') or v.get('string_value') or v.get('value')) is not None else {}), **({'BinaryValue': str(v.get('BinaryValue') or v.get('binary_value'))} if (v.get('BinaryValue') or v.get('binary_value')) is not None else {})} if isinstance(v, dict) else {'DataType': 'String', 'StringValue': str(v)}) for k, v in data.items()}; print(json.dumps(formatted))" "$NOTIFICATION_TYPE" <<< "$NOTIFICATION_MESSAGE_ATTRIBUTES")
+          CMD+=(--message-attributes "$ATTR_JSON")
 
           echo "Publishing notification of type $TYPE to SNS topic..."
           "${CMD[@]}"
