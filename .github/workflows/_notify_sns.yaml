@@ -20,6 +20,10 @@ on:
         description: 'The notification message'
         required: true
         type: string
+      message_attributes:
+        description: 'Message attributes as YAML or JSON object (supports simple key-value pairs or full SNS attribute definitions)'
+        required: false
+        type: string
     secrets:
       AWS_ROLE:
         description: 'AWS IAM Role ARN to assume'
@@ -49,6 +53,11 @@ jobs:
       id-token: write
       contents: read
     steps:
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -64,6 +73,7 @@ jobs:
           NOTIFICATION_TYPE: ${{ inputs.type }}
           NOTIFICATION_MESSAGE: ${{ inputs.message }}
           NOTIFICATION_SUBJECT: ${{ inputs.subject }}
+          NOTIFICATION_MESSAGE_ATTRIBUTES: ${{ inputs.message_attributes }}
         run: |
           TYPE=$(echo "$NOTIFICATION_TYPE" | tr '[:lower:]' '[:upper:]')
           case "$TYPE" in
@@ -82,5 +92,12 @@ jobs:
             exit 1
           fi
 
+          CMD=(aws sns publish --topic-arn "$TOPIC_ARN" --message "$NOTIFICATION_MESSAGE" --subject "$NOTIFICATION_SUBJECT")
+
+          if [ -n "$NOTIFICATION_MESSAGE_ATTRIBUTES" ]; then
+            ATTR_JSON=$(python3 -c "import sys, json, yaml; data = yaml.safe_load(sys.stdin.read()) or {}; sys.exit('Message attributes must be an object') if not isinstance(data, dict) else None; formatted = {k: ({'DataType': v.get('DataType') or v.get('data_type', 'String'), **({'StringValue': str(v.get('StringValue') or v.get('string_value') or v.get('value'))} if (v.get('StringValue') or v.get('string_value') or v.get('value')) is not None else {}), **({'BinaryValue': str(v.get('BinaryValue') or v.get('binary_value'))} if (v.get('BinaryValue') or v.get('binary_value')) is not None else {})} if isinstance(v, dict) else {'DataType': 'String', 'StringValue': str(v)}) for k, v in data.items()}; print(json.dumps(formatted))" <<< "$NOTIFICATION_MESSAGE_ATTRIBUTES")
+            CMD+=(--message-attributes "$ATTR_JSON")
+          fi
+
           echo "Publishing notification of type $TYPE to SNS topic..."
-          aws sns publish --topic-arn "$TOPIC_ARN" --message "$NOTIFICATION_MESSAGE" --subject "$NOTIFICATION_SUBJECT"
+          "${CMD[@]}"
