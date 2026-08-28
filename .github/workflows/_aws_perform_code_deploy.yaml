@@ -59,7 +59,7 @@ permissions:
 
 jobs:
   deploy:
-    runs-on: ${{ vars.DEFAULT_BUILD_RUNNER }}
+    runs-on: ${{ vars.DEFAULT_RUNNER }}
     environment: ${{ inputs.environment }}
     steps:
       - name: Configure AWS credentials
