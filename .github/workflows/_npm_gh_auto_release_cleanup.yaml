@@ -48,11 +48,11 @@ jobs:
           git config user.name "SparkHireBot"
           git config user.email "dev@sparkhire.com"
 
-      - name: Setup Node 20.x
-        uses: actions/setup-node@v4
+      - name: Setup Node 24.x
+        uses: actions/setup-node@v7
         with:
           registry-url: https://registry.npmjs.org
-          node-version: 20.x
+          node-version: '24'
 
       - name: Npm cache
         id: cache-npm
