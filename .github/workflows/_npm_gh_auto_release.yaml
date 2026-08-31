@@ -214,8 +214,6 @@ jobs:
         id: publish-package
         run: |
           npm publish ${{ inputs.build && '' || '--ignore-scripts' }} --tag ${{ inputs.canary && 'canary' || 'latest' }}
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Push changes
         if: ${{ inputs.canary == false }}
